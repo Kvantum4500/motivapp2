@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "com.kvantum.motivapp2",
+        "sha256_cert_fingerprints": ["2C:89:C4:60:BA:CA:AD:EB:4B:FE:98:ED:47:A2:B8:FD:6E:67:40:D9:DD:1E:73:CC:6F:BA:B8:59:D1:50:9F:A0"]
+      }
+    }]
