@@ -324,7 +324,7 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.0.1';
+const APP_VERSION = '2.1.0';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -3145,6 +3145,7 @@ RENDERERS.settings = function(){
       <div class="menurow" role="button" tabindex="0" onclick="document.getElementById('import-file').click()" onkeydown="kbActivate(event,()=>document.getElementById('import-file').click())"><span class="ic">⬆️</span><span class="lb">Adatok importálása</span></div>
       <div class="menurow" role="button" tabindex="0" onclick="confirmReset()" onkeydown="kbActivate(event,()=>confirmReset())"><span class="ic" style="color:var(--trail-red);">🗑️</span><span class="lb" style="color:var(--trail-red);">Minden adat törlése</span></div>
       <div class="menurow" role="button" tabindex="0" onclick="runDevSelfTest()" onkeydown="kbActivate(event,()=>runDevSelfTest())"><span class="ic">🧪</span><span class="lb">Fejlesztői önteszt</span></div>
+      <div class="menurow" role="button" tabindex="0" onclick="checkForAppUpdate()" onkeydown="kbActivate(event,()=>checkForAppUpdate())"><span class="ic">🔄</span><span class="lb">Frissítések keresése</span></div>
     </div>
     <input type="file" id="import-file" accept="application/json" style="display:none;" onchange="importData(event)">
     <div class="small g" style="text-align:center;margin-top:6px;">Ha a jövőben egy telepíthető (APK) verzióra váltasz, a mostani böngészős adatok nem kerülnek át automatikusan, mert a kettő külön tárolót használ. Váltás előtt exportáld itt az adataidat, majd az új verzióban importáld vissza őket.</div>
@@ -3152,6 +3153,17 @@ RENDERERS.settings = function(){
     <div class="small g" style="text-align:center;margin-top:2px;opacity:0.6;">v${APP_VERSION}</div>`;
 };
 function togglePerm(key,val){ App.state.aiPerm[key]=val; saveState(); }
+/* checkForAppUpdate: kézi "van-e újabb verzió?" ellenőrzés a Beállításokból,
+   hogy fejlesztéskor/tesztkor ne kelljen kivárni az automatikus SW-ellenőrzést.
+   A window._swReg-et a fájl végi service worker regisztráció tölti fel. */
+function checkForAppUpdate(){
+  const reg = window._swReg;
+  if(!reg){ toast('A frissítés-ellenőrzés csak https:// alól, telepített service workerrel érhető el.'); return; }
+  toast('Frissítések keresése…');
+  reg.update().then(()=>{
+    setTimeout(()=>{ if(!_updateBannerEl) toast('A legfrissebb verziót használod.'); }, 1500);
+  }).catch(()=>toast('Nem sikerült ellenőrizni — nincs internetkapcsolat?'));
+}
 /* Fejlesztői önteszt: a Settings "Adatok" kártyából indítható, UI-s hozzáférés
    a fájl végén definiált runRegressionChecks()-hez (eddig csak konzolból volt
    hívható). A teszt pár másodpercig futhat (szimulált API-hívásokat is
@@ -3781,9 +3793,59 @@ window.runRegressionChecks = runRegressionChecks;
    elinduljon és működjön az app. file:// -ról nyitva a böngészők nem
    engedik a Service Worker regisztrációt (ez normális, csak https://
    vagy localhost alól működik), ezért a hibát csendben elnyeljük. */
+
+/* Frissítés-értesítő sáv: amikor egy éles push után új service worker
+   települ a háttérben, a MÁR MEGNYITOTT munkamenet ezt csak reload után
+   futtatná le — ezért ahelyett, hogy a felhasználó alól rántanánk fel az
+   oldalt (pl. gépelés közben), egy eldobható sávon kínáljuk fel az azonnali
+   frissítést, a toastUndo()-éhoz hasonló, önálló DOM-elemes mintával. */
+let _updateBannerEl = null;
+function showUpdateBanner(){
+  if(_updateBannerEl) return;
+  const t = document.createElement('div');
+  t.id = 'update-banner';
+  t.setAttribute('role','status'); t.setAttribute('aria-live','polite');
+  t.style.cssText = 'position:fixed;bottom:calc(90px + var(--safe-bottom));left:50%;'
+    +'transform:translateX(-50%);background:var(--paper);color:var(--ink);'
+    +'padding:9px 9px 9px 18px;border-radius:999px;font-weight:600;font-size:13px;z-index:110;'
+    +'display:flex;align-items:center;gap:10px;max-width:calc(100vw - 32px);'
+    +'box-shadow:0 6px 20px rgba(0,0,0,.28);';
+  const label = document.createElement('span');
+  label.textContent = 'Új verzió elérhető';
+  label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+  const btn = document.createElement('button');
+  btn.type = 'button'; btn.textContent = 'Frissítés';
+  btn.style.cssText = 'background:var(--trail-yellow);color:var(--ink);border:none;'
+    +'border-radius:999px;padding:6px 14px;font-weight:700;font-size:12.5px;cursor:pointer;flex-shrink:0;';
+  btn.onclick = ()=>window.location.reload();
+  t.appendChild(label); t.appendChild(btn);
+  document.body.appendChild(t);
+  _updateBannerEl = t;
+}
 if('serviceWorker' in navigator){
   window.addEventListener('load', ()=>{
-    navigator.serviceWorker.register('sw.js').catch(()=>{});
+    navigator.serviceWorker.register('sw.js').then(reg=>{
+      window._swReg = reg;
+      const watchForInstall = worker=>{
+        if(!worker) return;
+        worker.addEventListener('statechange', ()=>{
+          // A meglévő controller jelenléte különbözteti meg az első
+          // telepítést (nincs mit felkínálni) a háttérben érkezett
+          // frissítéstől (van futó, régebbi verzió — azt kínáljuk fel).
+          if(worker.state==='installed' && navigator.serviceWorker.controller){
+            showUpdateBanner();
+          }
+        });
+      };
+      watchForInstall(reg.installing);
+      reg.addEventListener('updatefound', ()=>watchForInstall(reg.installing));
+      // Rendszeres háttér-ellenőrzés: óránként, és minden alkalommal, amikor
+      // a felhasználó visszatér az appba (tabváltás / képernyő felébresztése).
+      setInterval(()=>reg.update().catch(()=>{}), 60*60*1000);
+      document.addEventListener('visibilitychange', ()=>{
+        if(document.visibilityState==='visible') reg.update().catch(()=>{});
+      });
+    }).catch(()=>{});
   });
 }
 </script>
