@@ -9,7 +9,7 @@
    követve) — ez kényszeríti ki, hogy a böngésző/TWA letöltse az új
    verziót, és a régi cache-t eldobja.
 */
-const CACHE_NAME = 'motivapp-cache-v2.1.0';
+const CACHE_NAME = 'motivapp-cache-v2.1.1';
 const APP_SHELL = [
   './index.html',
   './motivapp2-2_etezes_penzugy_jovahagyas_vegleges.html',
@@ -39,11 +39,20 @@ self.addEventListener('activate', (event) => {
 // verziót próbálja hozni (hogy egy módosítás gyorsan látszódjon), de ha
 // nincs kapcsolat, a gyorsítótárazott verzióból tölt be, tehát offline is
 // működik. A cache háttérben mindig frissül egy sikeres hálózati válasszal.
+// { cache: 'no-store' }: sima fetch() nélkül ez csak "próbáljuk meg a
+// hálózatot" volt, DE a böngésző saját HTTP-cache-e (és a GitHub Pages
+// CDN kb. 10 perces cache-e) így is kiszolgálhatott volna egy régebbi,
+// még nem lejárt választ hálózati kérés nélkül — emiatt egy friss push
+// után percekig a régi tartalom látszódhatott, annak ellenére, hogy a
+// "network-first" logika helyesen futott le. A no-store ezt zárja ki:
+// mindig valódi hálózati kérés megy ki, cache-olvasás/írás nélkül a
+// böngésző HTTP-rétegében (a saját Cache API-s tárolásunkat lentebb ez
+// nem érinti).
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { cache: 'no-store' })
       .then((response) => {
         const copy = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
