@@ -908,8 +908,9 @@ function saveQuickLog(field){
 }
 /*__VIEW_MA__*/
 /* ================= VIEW: SCHEDULE (Munkarend + Naptár, nap/hét/hónap/év) ================= */
-App.ui.calView = App.ui.calView || 'het';
+App.ui.calView = App.ui.calView || 'honap';
 App.ui.calRef = App.ui.calRef || todayISO();
+const CAL_VIEW_LABELS = {nap:'NAPI', het:'HETI', honap:'HAVI', ev:'ÉVES'};
 function scheduleTopToggleHtml(){
   return `<div class="subtabs" style="margin-bottom:14px;">
       <div class="subtab ${App.ui.scheduleTopView==='naptar'?'active':''}" role="button" tabindex="0" onclick="setScheduleTopView('naptar')" onkeydown="kbActivate(event,()=>setScheduleTopView('naptar'))">🗓️ NAPTÁR</div>
@@ -926,10 +927,7 @@ RENDERERS.schedule = function(){
   }
   el.innerHTML = scheduleTopToggleHtml() + `
     <div class="subtabs">
-      <div class="subtab ${App.ui.calView==='nap'?'active':''}" role="button" tabindex="0" onclick="setCalView('nap')" onkeydown="kbActivate(event,()=>setCalView('nap'))">NAPI</div>
-      <div class="subtab ${App.ui.calView==='het'?'active':''}" role="button" tabindex="0" onclick="setCalView('het')" onkeydown="kbActivate(event,()=>setCalView('het'))">HETI</div>
-      <div class="subtab ${App.ui.calView==='honap'?'active':''}" role="button" tabindex="0" onclick="setCalView('honap')" onkeydown="kbActivate(event,()=>setCalView('honap'))">HAVI</div>
-      <div class="subtab ${App.ui.calView==='ev'?'active':''}" role="button" tabindex="0" onclick="setCalView('ev')" onkeydown="kbActivate(event,()=>setCalView('ev'))">ÉVES</div>
+      <div class="subtab active" role="button" tabindex="0" onclick="openCalViewSheet()" onkeydown="kbActivate(event,()=>openCalViewSheet())">${CAL_VIEW_LABELS[App.ui.calView]} ▾</div>
     </div>
     <div id="cal-content"></div>
 
@@ -963,6 +961,10 @@ RENDERERS.schedule = function(){
   renderCalContent();
 };
 function setCalView(v){ App.ui.calView=v; RENDERERS.schedule(); }
+function openCalViewSheet(){
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Nézet váltása</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+    ${Object.keys(CAL_VIEW_LABELS).map(v=>`<div class="menurow" role="button" tabindex="0" onclick="setCalView('${v}');closeSheet();" onkeydown="kbActivate(event,()=>{setCalView('${v}');closeSheet();})"><span class="lb">${CAL_VIEW_LABELS[v]}</span>${App.ui.calView===v?'<span class="arrow">✓</span>':''}</div>`).join('')}`);
+}
 function renderCalContent(){
   const c = document.getElementById('cal-content'); if(!c) return;
   if(App.ui.calView==='nap') renderNapView(c);
