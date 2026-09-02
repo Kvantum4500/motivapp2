@@ -423,7 +423,8 @@ function defaultState(){
     journeys:[],
     aiChat:[],
     aiPerm:{auto:true,confirmCalendar:true,confirmPlan:true},
-    settingsMeta:{createdAt:Date.now()}
+    settingsMeta:{createdAt:Date.now()},
+    lastBackupAt:null // utolsó sikeres fájlmentés ISO időbélyege (ld. saveToFile())
   };
 }
 
@@ -500,6 +501,53 @@ function saveState(){
     const badge = document.getElementById('save-status-badge');
     if(badge) badge.outerHTML = saveStatusBadgeHtml();
   }, 500);
+}
+
+/* ===== FÁJLBA MENTÉS/BETÖLTÉS (File System Access API, opcionális) =====
+   A hasFSAccess feature-detect eldönti, hogy a böngésző tudja-e a
+   showSaveFilePicker/showOpenFilePicker API-t — ez Android/TWA alatt
+   Chrome-verziótól függően hiányozhat, ezért ez a funkció mindenhol csak
+   progresszív ráépülés a meglévő letöltés/fájlválasztó folyamatra, SOHA
+   nem kötelező előfeltétel (ld. saveToFile()/loadFromFile()).
+   A kiválasztott FileSystemFileHandle-t az oldal-újratöltések között egy
+   minimális, saját IndexedDB store-ban tartjuk meg (a localStorage csak
+   szöveget tud, a handle nem szerializálható stringgé, de structured
+   clone-nal IndexedDB-be igen). Minden IndexedDB hívás try/catch-elve
+   van: bármilyen hiba esetén úgy viselkedünk, mintha nem lenne elmentett
+   handle — ez sosem dobhat el nem kapott hibát, és sosem akaszthatja meg
+   a mentést/betöltést. */
+const hasFSAccess = typeof window.showSaveFilePicker === 'function' && typeof window.showOpenFilePicker === 'function';
+const FS_DB_NAME = 'motivapp-fs', FS_STORE_NAME = 'handles', FS_HANDLE_KEY = 'backupFile';
+function _openFsDb(){
+  return new Promise((resolve,reject)=>{
+    const req = indexedDB.open(FS_DB_NAME, 1);
+    req.onupgradeneeded = ()=>{ req.result.createObjectStore(FS_STORE_NAME); };
+    req.onsuccess = ()=>resolve(req.result);
+    req.onerror = ()=>reject(req.error);
+  });
+}
+async function getStoredHandle(){
+  try{
+    const db = await _openFsDb();
+    return await new Promise((resolve,reject)=>{
+      const tx = db.transaction(FS_STORE_NAME,'readonly');
+      const req = tx.objectStore(FS_STORE_NAME).get(FS_HANDLE_KEY);
+      req.onsuccess = ()=>resolve(req.result||null);
+      req.onerror = ()=>reject(req.error);
+    });
+  }catch(e){ return null; }
+}
+async function setStoredHandle(handle){
+  try{
+    const db = await _openFsDb();
+    await new Promise((resolve,reject)=>{
+      const tx = db.transaction(FS_STORE_NAME,'readwrite');
+      tx.objectStore(FS_STORE_NAME).put(handle, FS_HANDLE_KEY);
+      tx.oncomplete = ()=>resolve();
+      tx.onerror = ()=>reject(tx.error);
+    });
+  }catch(e){ /* nem kritikus — ha nem sikerül elmenteni a handle-t, a következő
+                mentés/betöltés egyszerűen újra fájlválasztót fog nyitni */ }
 }
 
 /* ---------- utils ---------- */
@@ -3141,14 +3189,16 @@ RENDERERS.settings = function(){
     <div class="sectiontitle">Adatok</div>
     <div id="save-status-badge">${saveStatusBadgeHtml()}</div>
     <div class="card" style="padding:2px 16px;">
-      <div class="menurow" role="button" tabindex="0" onclick="exportData()" onkeydown="kbActivate(event,()=>exportData())"><span class="ic">⬇️</span><span class="lb">Adatok exportálása (JSON)</span></div>
-      <div class="menurow" role="button" tabindex="0" onclick="document.getElementById('import-file').click()" onkeydown="kbActivate(event,()=>document.getElementById('import-file').click())"><span class="ic">⬆️</span><span class="lb">Adatok importálása</span></div>
+      <div class="menurow" role="button" tabindex="0" onclick="saveToFile()" onkeydown="kbActivate(event,()=>saveToFile())"><span class="ic">💾</span><span class="lb">Mentés fájlba</span></div>
+      <div class="menurow" role="button" tabindex="0" onclick="loadFromFile()" onkeydown="kbActivate(event,()=>loadFromFile())"><span class="ic">📂</span><span class="lb">Betöltés fájlból</span></div>
       <div class="menurow" role="button" tabindex="0" onclick="confirmReset()" onkeydown="kbActivate(event,()=>confirmReset())"><span class="ic" style="color:var(--trail-red);">🗑️</span><span class="lb" style="color:var(--trail-red);">Minden adat törlése</span></div>
       <div class="menurow" role="button" tabindex="0" onclick="runDevSelfTest()" onkeydown="kbActivate(event,()=>runDevSelfTest())"><span class="ic">🧪</span><span class="lb">Fejlesztői önteszt</span></div>
       <div class="menurow" role="button" tabindex="0" onclick="checkForAppUpdate()" onkeydown="kbActivate(event,()=>checkForAppUpdate())"><span class="ic">🔄</span><span class="lb">Frissítések keresése</span></div>
     </div>
+    <div id="backup-status-line">${backupStatusLineHtml()}</div>
+    ${!hasFSAccess ? `<div class="small g" style="text-align:center;margin-top:2px;">Ezen a böngészőn/eszközön a "Mentés fájlba" minden alkalommal új fájlt tölt le (a közvetlen fájlírás itt nem elérhető).</div>` : ''}
     <input type="file" id="import-file" accept="application/json" style="display:none;" onchange="importData(event)">
-    <div class="small g" style="text-align:center;margin-top:6px;">Ha a jövőben egy telepíthető (APK) verzióra váltasz, a mostani böngészős adatok nem kerülnek át automatikusan, mert a kettő külön tárolót használ. Váltás előtt exportáld itt az adataidat, majd az új verzióban importáld vissza őket.</div>
+    <div class="small g" style="text-align:center;margin-top:6px;">Ha a jövőben egy telepíthető (APK) verzióra váltasz, a mostani böngészős adatok nem kerülnek át automatikusan, mert a kettő külön tárolót használ. Váltás előtt mentsd el itt az adataidat, majd az új verzióban töltsd be vissza őket.</div>
     <div class="small g" style="text-align:center;margin-top:6px;">MotivApp 2.0 · helyben, ezen az eszközön tárolt adatok</div>
     <div class="small g" style="text-align:center;margin-top:2px;opacity:0.6;">v${APP_VERSION}</div>`;
 };
@@ -3197,25 +3247,65 @@ function runDevSelfTest(){
     toast('Hiba az önteszt futtatásakor');
   });
 }
+function buildExportPayload(){
+  /* schemaVersion/exportedAt: csak kiegészítő metaadat, az applyImportedJson()
+     alapját adó defaultState()-re épülő betöltés ismeretlen mezőként
+     figyelmen kívül hagyja őket, így a formátum visszafelé kompatibilis
+     marad. Célja: egy jövőbeli (pl. APK-) verzió biztosan azonosítani
+     tudja, milyen állapotból jött a mentés. */
+  return Object.assign({schemaVersion:APP_VERSION, exportedAt:new Date().toISOString()}, App.state);
+}
 function exportData(){
-  /* schemaVersion/exportedAt: csak kiegészítő metaadat, a defaultState()-re
-     épülő importData() ismeretlen mezőként figyelmen kívül hagyja őket,
-     így a formátum visszafelé kompatibilis marad. Célja: egy jövőbeli
-     (pl. APK-) verzió biztosan azonosítani tudja, milyen állapotból jött
-     az export. */
-  const payload = Object.assign({schemaVersion:APP_VERSION, exportedAt:new Date().toISOString()}, App.state);
+  const payload = buildExportPayload();
   const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
   const url=URL.createObjectURL(blob), a=document.createElement('a');
-  a.href=url; a.download='motivapp-mentes-'+todayISO()+'.json'; a.click(); URL.revokeObjectURL(url); toast('Exportálva');
+  a.href=url; a.download='motivapp-mentes-'+todayISO()+'.json'; a.click(); URL.revokeObjectURL(url);
+}
+/* applyImportedJson: a betöltött fájl szövegéből a jelenlegi App.state-et
+   építi fel (parse + a defaultState()-re épülő merge + a régi/hiányzó
+   mezők pótlása). A klasszikus <input type=file> alapú importData()/
+   confirmImportData() párost ÉS az új, File System Access API-s
+   betöltési útvonalakat (confirmImportFromHandle()/pickAnotherFileForImport())
+   is ez szolgálja ki, hogy a merge-logika egy helyen éljen. Hibás fájl
+   esetén dob — a hívó felel a toast/closeSheet kezeléséért. */
+function applyImportedJson(text){
+  const parsed = JSON.parse(text);
+  if(!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid root');
+  const d = defaultState();
+  const next = Object.assign(d, parsed);
+  /* Mélyebb ellenőrzés/pótlás a loadState() mintája alapján, kiterjesztve */
+  if(!next.finance || typeof next.finance !== 'object' || !Array.isArray(next.finance.mandatory)){
+    const oldIncome = (next.finance && next.finance.monthlyIncome) || 0;
+    next.finance = d.finance;
+    next.finance.monthlyIncome = oldIncome;
+  }
+  if(!Array.isArray(next.finance.discretionary)) next.finance.discretionary = d.finance.discretionary;
+  if(!Array.isArray(next.finance.savings)) next.finance.savings = d.finance.savings;
+  for(const k of ['tasks','events','workouts','weightLog','healthLog','journeys','aiChat']){
+    if(!Array.isArray(next[k])) next[k] = d[k];
+  }
+  if(!next.skills || typeof next.skills !== 'object') next.skills = {};
+  if(!next.aiPerm || typeof next.aiPerm !== 'object') next.aiPerm = d.aiPerm;
+  if(!next.nutrition || typeof next.nutrition !== 'object'){
+    next.nutrition = d.nutrition;
+  } else {
+    if(!next.nutrition.targets || typeof next.nutrition.targets !== 'object') next.nutrition.targets = d.nutrition.targets;
+    if(!Array.isArray(next.nutrition.log)) next.nutrition.log = d.nutrition.log;
+  }
+  App.state = next;
+  saveState();
+}
+function importConfirmSheetHtml(onConfirmFn){
+  return `<div class="sheet-head"><div class="sheet-title">Biztosan importálod?</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+    <div class="small muted" style="margin-bottom:16px;">Ez felülírja a jelenlegi adataidat a kiválasztott fájl tartalmával. A művelet nem vonható vissza.</div>
+    <button class="btn btn-danger btn-block" onclick="${onConfirmFn}()">Igen, importálom</button>`;
 }
 let _pendingImportFile = null;
 function importData(evt){
   const file=evt.target.files[0]; if(!file) return;
   _pendingImportFile = file;
   evt.target.value='';
-  openSheet(`<div class="sheet-head"><div class="sheet-title">Biztosan importálod?</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
-    <div class="small muted" style="margin-bottom:16px;">Ez felülírja a jelenlegi adataidat a kiválasztott fájl tartalmával. A művelet nem vonható vissza.</div>
-    <button class="btn btn-danger btn-block" onclick="confirmImportData()">Igen, importálom</button>`);
+  openSheet(importConfirmSheetHtml('confirmImportData'));
 }
 function confirmImportData(){
   const file = _pendingImportFile;
@@ -3224,34 +3314,139 @@ function confirmImportData(){
   const reader=new FileReader();
   reader.onload=e=>{
     try{
-      const parsed = JSON.parse(e.target.result);
-      if(!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid root');
-      const d = defaultState();
-      const next = Object.assign(d, parsed);
-      /* Mélyebb ellenőrzés/pótlás a loadState() mintája alapján, kiterjesztve */
-      if(!next.finance || typeof next.finance !== 'object' || !Array.isArray(next.finance.mandatory)){
-        const oldIncome = (next.finance && next.finance.monthlyIncome) || 0;
-        next.finance = d.finance;
-        next.finance.monthlyIncome = oldIncome;
-      }
-      if(!Array.isArray(next.finance.discretionary)) next.finance.discretionary = d.finance.discretionary;
-      if(!Array.isArray(next.finance.savings)) next.finance.savings = d.finance.savings;
-      for(const k of ['tasks','events','workouts','weightLog','healthLog','journeys','aiChat']){
-        if(!Array.isArray(next[k])) next[k] = d[k];
-      }
-      if(!next.skills || typeof next.skills !== 'object') next.skills = {};
-      if(!next.aiPerm || typeof next.aiPerm !== 'object') next.aiPerm = d.aiPerm;
-      if(!next.nutrition || typeof next.nutrition !== 'object'){
-        next.nutrition = d.nutrition;
-      } else {
-        if(!next.nutrition.targets || typeof next.nutrition.targets !== 'object') next.nutrition.targets = d.nutrition.targets;
-        if(!Array.isArray(next.nutrition.log)) next.nutrition.log = d.nutrition.log;
-      }
-      App.state = next;
-      saveState(); closeSheet(); toast('Importálva'); renderApp();
+      applyImportedJson(e.target.result);
+      closeSheet(); toast('Importálva'); renderApp();
     }catch(err){ closeSheet(); toast('Hibás fájl'); }
   };
   reader.readAsText(file);
+}
+
+/* ---- Mentés/betöltés fájlba (File System Access API, progresszív ráépülés) ----
+   saveToFile(): ha van elmentett, írható handle -> közvetlenül ír bele
+   (nincs fájlválasztó dialógus). Ha nincs handle, a permission nem
+   adható meg, vagy az írás elszáll (pl. a fájlt időközben törölték) ->
+   showSaveFilePicker()-rel kér új célfájlt, és azt jegyzi meg jövőre.
+   Ha a File System Access API egyáltalán nem elérhető (pl. sok
+   Android/TWA Chrome build), vagy bármi más okból elszáll a fenti (a
+   felhasználó általi dialógus-megszakítás kivételével) -> visszaesik a
+   megszokott exportData() letöltésre. A háromféle kimenetet (közvetlen
+   írás / letöltéses fallback / sima letöltés FS Access nélkül) külön
+   toast szöveg jelzi, hogy a felhasználó lássa, mi történt valójában. */
+async function saveToFile(){
+  if(hasFSAccess){
+    let handle = null;
+    try{ handle = await getStoredHandle(); }catch(e){ handle = null; }
+    let granted = false;
+    if(handle){
+      try{
+        let perm = await handle.queryPermission({mode:'readwrite'});
+        if(perm !== 'granted') perm = await handle.requestPermission({mode:'readwrite'});
+        granted = (perm === 'granted');
+      }catch(e){ granted = false; }
+    }
+    if(handle && granted){
+      try{
+        const payload = buildExportPayload();
+        const w = await handle.createWritable();
+        await w.write(JSON.stringify(payload,null,2));
+        await w.close();
+        markBackupSaved('Mentve');
+        return;
+      }catch(e){ /* pl. a fájlt időközben törölték -> essünk vissza a választóra alább */ }
+    }
+    try{
+      const newHandle = await window.showSaveFilePicker({suggestedName:'motivapp-mentes.json', types:[{description:'MotivApp mentés', accept:{'application/json':['.json']}}]});
+      const payload = buildExportPayload();
+      const w = await newHandle.createWritable();
+      await w.write(JSON.stringify(payload,null,2));
+      await w.close();
+      await setStoredHandle(newHandle);
+      markBackupSaved('Mentve');
+    }catch(e){
+      if(e && e.name === 'AbortError') return; // a felhasználó bezárta a fájlválasztót — nincs teendő
+      exportData();
+      markBackupSaved('Nem sikerült közvetlenül menteni — letöltés indult helyette');
+    }
+    return;
+  }
+  exportData();
+  markBackupSaved('Exportálva');
+}
+function markBackupSaved(msg){
+  App.state.lastBackupAt = new Date().toISOString();
+  saveState();
+  toast(msg);
+  const line = document.getElementById('backup-status-line');
+  if(line) line.outerHTML = `<div id="backup-status-line">${backupStatusLineHtml()}</div>`;
+}
+function backupStatusLineHtml(){
+  if(App.state.lastBackupAt){
+    const d = new Date(App.state.lastBackupAt);
+    const iso = d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
+    return `<div class="small g" style="text-align:center;margin-top:8px;">Utolsó mentés: ${fmtDateHu(iso)} · ${fmtTime(d)}</div>`;
+  }
+  return `<div class="small g" style="text-align:center;margin-top:8px;">Még nem készült biztonsági mentés</div>`;
+}
+/* loadFromFile(): ha van elmentett, olvasható handle -> kis menüt ajánl fel
+   (gyors betöltés a mentett fájlból, vagy másik fájl választása — mindkettő
+   a megszokott "Ez felülírja..." megerősítő sheeten megy át, mielőtt az
+   adatok tényleg felülíródnának). Ha nincs használható handle, de van File
+   System Access API -> egyből natív fájlválasztót nyit (és megjegyzi az
+   így választott fájlt jövőre). Ha nincs File System Access API -> a
+   megszokott <input type=file> alapú folyamat fut, változatlanul. */
+let _pendingImportHandle = null;
+async function loadFromFile(){
+  if(hasFSAccess){
+    let handle = null;
+    try{ handle = await getStoredHandle(); }catch(e){ handle = null; }
+    let canReadDirect = false;
+    if(handle){
+      try{
+        let perm = await handle.queryPermission({mode:'read'});
+        if(perm !== 'granted') perm = await handle.requestPermission({mode:'read'});
+        canReadDirect = (perm === 'granted');
+      }catch(e){ canReadDirect = false; }
+    }
+    if(handle && canReadDirect){
+      _pendingImportHandle = handle;
+      openSheet(`<div class="sheet-head"><div class="sheet-title">Betöltés</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+        <div class="card" style="padding:2px 16px;">
+          <div class="menurow" role="button" tabindex="0" onclick="confirmImportFromHandle()" onkeydown="kbActivate(event,()=>confirmImportFromHandle())"><span class="ic">📂</span><span class="lb">Betöltés a mentett fájlból</span></div>
+          <div class="menurow" role="button" tabindex="0" onclick="pickAnotherFileForImport()" onkeydown="kbActivate(event,()=>pickAnotherFileForImport())"><span class="ic">📁</span><span class="lb">Másik fájl kiválasztása…</span></div>
+        </div>`);
+      return;
+    }
+    await pickAnotherFileForImport();
+    return;
+  }
+  document.getElementById('import-file').click();
+}
+function confirmImportFromHandle(){
+  if(!_pendingImportHandle){ closeSheet(); return; }
+  openSheet(importConfirmSheetHtml('applyImportFromHandle'));
+}
+async function pickAnotherFileForImport(){
+  closeSheet();
+  if(!hasFSAccess){ document.getElementById('import-file').click(); return; }
+  try{
+    const [handle] = await window.showOpenFilePicker({types:[{description:'MotivApp mentés', accept:{'application/json':['.json']}}]});
+    _pendingImportHandle = handle;
+    await setStoredHandle(handle); // ez lesz a jövőbeli mentések/betöltések alapértelmezett célfájlja is
+    openSheet(importConfirmSheetHtml('applyImportFromHandle'));
+  }catch(e){
+    if(e && e.name === 'AbortError') return; // a felhasználó bezárta a fájlválasztót — nincs teendő
+    document.getElementById('import-file').click();
+  }
+}
+async function applyImportFromHandle(){
+  const handle = _pendingImportHandle;
+  _pendingImportHandle = null;
+  if(!handle){ closeSheet(); return; }
+  try{
+    const text = await (await handle.getFile()).text();
+    applyImportedJson(text);
+    closeSheet(); toast('Betöltve'); renderApp();
+  }catch(err){ closeSheet(); toast('Hibás fájl'); }
 }
 function confirmReset(){
   openSheet(`<div class="sheet-head"><div class="sheet-title">Biztosan törlöd?</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
