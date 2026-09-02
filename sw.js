@@ -9,7 +9,7 @@
    követve) — ez kényszeríti ki, hogy a böngésző/TWA letöltse az új
    verziót, és a régi cache-t eldobja.
 */
-const CACHE_NAME = 'motivapp-cache-v2.1.1';
+const CACHE_NAME = 'motivapp-cache-v2.1.2';
 const APP_SHELL = [
   './index.html',
   './motivapp2-2_etezes_penzugy_jovahagyas_vegleges.html',
@@ -19,10 +19,16 @@ const APP_SHELL = [
   './icon-512-maskable.png',
 ];
 
+// cache.addAll(APP_SHELL) mind-vagy-semmi volt: ha egyetlen fájl (pl. egy
+// ikon) letöltése átmenetileg elakadt egy gyenge mobilneten, a TELJES
+// telepítés elutasult, self.skipWaiting() sosem futott le, és az új verzió
+// örökre "installing" állapotban ragadt — csendben, mert a hívó oldal ezt
+// sehol nem naplózza. Promise.allSettled-del egy-egy fájl hibája többé nem
+// akaszthatja meg a többit / a telepítés lezárását.
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then((cache) => cache.addAll(APP_SHELL))
+      .then((cache) => Promise.allSettled(APP_SHELL.map((url) => cache.add(url))))
       .then(() => self.skipWaiting())
   );
 });

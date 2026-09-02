@@ -324,7 +324,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.1.1';
+const APP_VERSION = '2.1.2';
+/* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
+   CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
+   lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
+   régebbi, mint amit a szerver éppen kiszolgál. */
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.1.2';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -4019,8 +4024,43 @@ function showUpdateBanner(){
   document.body.appendChild(t);
   _updateBannerEl = t;
 }
+/* selfHealIfStale: a service worker SAJÁT frissítési ciklusától (reg.update()
+   / skipWaiting+clients.claim) FÜGGETLEN védőháló. Egy régóta futó, telepített
+   példányban (pl. Android TWA) előfordulhat, hogy ez a ciklus valamiért nem
+   fut le megbízhatóan — pl. egy korábbi telepítés csendben elakadt, mert a
+   cache.addAll() egyetlen fájl (pl. ikon) átmeneti hibája miatt sosem futott
+   le (ld. sw.js install handler), vagy egyszerűen a böngésző hosszú ideig nem
+   ellenőrzött újra. ETTŐL FÜGGETLENÜL, minden oldalbetöltéskor lekérjük magát
+   a sw.js-t no-store + egyedi query stringgel (ez sem a böngésző HTTP-cache-ét,
+   sem a GitHub Pages CDN URL-kulcsos cache-ét nem hagyja érvényesülni), és
+   összevetjük a benne szereplő CACHE_NAME-et az EXPECTED_SW_CACHE_NAME-mel,
+   amit EZ a betöltött oldal saját magától vár. Eltérés = ez az oldalpéldány
+   régebbi, mint amit a szerver most kiszolgál — ilyenkor minden SW-regisztrációt
+   és cache-et törlünk, majd újratöltünk, ami ugyanazt csinálja, mint a
+   chrome://serviceworker-internals-beli kézi "Unregister", csak automatikusan.
+   sessionStorage-flaggel legfeljebb egyszer avatkozik be munkamenetenként,
+   hogy egy váratlan/tartós eltérés esetén se tudjon végtelen reload-hurkot
+   okozni. */
+function selfHealIfStale(){
+  if(!('serviceWorker' in navigator)) return;
+  if(sessionStorage.getItem('motivapp2:selfHealed')) return;
+  fetch('./sw.js?t='+Date.now(), {cache:'no-store'})
+    .then(res=>res.text())
+    .then(text=>{
+      const m = text.match(/CACHE_NAME\s*=\s*'([^']+)'/);
+      if(!m || m[1]===EXPECTED_SW_CACHE_NAME) return;
+      sessionStorage.setItem('motivapp2:selfHealed','1');
+      return navigator.serviceWorker.getRegistrations()
+        .then(regs=>Promise.all(regs.map(r=>r.unregister())))
+        .then(()=>('caches' in window ? caches.keys() : []))
+        .then(names=>Promise.all(names.map(n=>caches.delete(n))))
+        .then(()=>{ window.location.reload(); });
+    })
+    .catch(()=>{}); // offline / hálózati hiba — nincs teendő, a normál SW-ciklus még megpróbálhatja
+}
 if('serviceWorker' in navigator){
   window.addEventListener('load', ()=>{
+    selfHealIfStale();
     navigator.serviceWorker.register('sw.js').then(reg=>{
       window._swReg = reg;
       const watchForInstall = worker=>{
@@ -4038,9 +4078,14 @@ if('serviceWorker' in navigator){
       reg.addEventListener('updatefound', ()=>watchForInstall(reg.installing));
       // Rendszeres háttér-ellenőrzés: óránként, és minden alkalommal, amikor
       // a felhasználó visszatér az appba (tabváltás / képernyő felébresztése).
-      setInterval(()=>reg.update().catch(()=>{}), 60*60*1000);
+      // A hibát korábban csendben elnyeltük — most legalább console.error-ral
+      // látszik, ha ismételten sikertelen (pl. tartósan offline az eszköz).
+      setInterval(()=>reg.update().catch(e=>console.error('SW update check failed', e)), 60*60*1000);
       document.addEventListener('visibilitychange', ()=>{
-        if(document.visibilityState==='visible') reg.update().catch(()=>{});
+        if(document.visibilityState==='visible'){
+          selfHealIfStale();
+          reg.update().catch(e=>console.error('SW update check failed', e));
+        }
       });
     }).catch(()=>{});
   });
