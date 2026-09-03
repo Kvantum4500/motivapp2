@@ -324,12 +324,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.1.3';
+const APP_VERSION = '2.1.4';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.1.3';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.1.4';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -732,6 +732,15 @@ RENDERERS.ma = function(){
   const todayHealth = App.state.healthLog.find(h=>h.date===iso) || {};
   const energyNow = todayEnergyLevel();
   const lastAi = App.state.aiChat.filter(m=>m.role==='assistant').slice(-1)[0];
+  // Gyorselérés-chipek (Feladatkezelő/Napló): "nyitott" feladat = típusonként
+  // eltérő befejezettség-fogalom (checkbox: done, százalékos: progress<100,
+  // lépéssoros: nincs minden lépés kipipálva vagy még nincs is lépése).
+  const openTasksCount = App.state.tasks.filter(t=>{
+    if(t.type==='percent') return (t.progress||0) < 100;
+    if(t.type==='steps') return !(t.steps && t.steps.length && t.steps.every(s=>s.done));
+    return !t.done;
+  }).length;
+  const hasJournalToday = App.state.journal.some(e=>e.date===iso);
   const dayNum = Math.floor(new Date(iso+'T00:00:00').getTime()/86400000);
   const dailyQuote = DAILY_QUOTES[((dayNum % DAILY_QUOTES.length) + DAILY_QUOTES.length) % DAILY_QUOTES.length];
 
@@ -761,6 +770,12 @@ RENDERERS.ma = function(){
     <div class="sectiontitle">Feladatok <span class="g" style="cursor:pointer;font-size:13px;" onclick="openAddTaskSheet()">+ Új</span></div>
     <div class="card" style="padding:6px 16px;">
       ${tasksToday.length? tasksToday.map(t=>taskRowHtml(t)).join('') : `<div class="empty"><div class="ic">📋</div><div class="t">Nincs mai feladat</div><div class="d">Adj hozzá egyet a fenti gombbal.</div></div>`}
+    </div>
+
+    <div class="sectiontitle">Gyorselérés</div>
+    <div class="flex gap8" style="margin-bottom:12px;">
+      <span class="pill pill-yellow" style="cursor:pointer;" onclick="setTab('schedule');App.ui.scheduleTopView='feladatok';RENDERERS.schedule();">📋 Feladatok · ${openTasksCount} nyitott</span>
+      <span class="pill pill-green" style="cursor:pointer;" onclick="setTab('schedule');App.ui.scheduleTopView='naplo';RENDERERS.schedule();">🙂 Napló${hasJournalToday?' · Ma írva':''}</span>
     </div>
 
     <div class="sectiontitle">Gyors napló</div>
@@ -1050,6 +1065,8 @@ function scheduleTopToggleHtml(){
   return `<div class="subtabs" style="margin-bottom:14px;">
       <div class="subtab ${App.ui.scheduleTopView==='naptar'?'active':''}" role="button" tabindex="0" onclick="setScheduleTopView('naptar')" onkeydown="kbActivate(event,()=>setScheduleTopView('naptar'))">🗓️ NAPTÁR</div>
       <div class="subtab ${App.ui.scheduleTopView==='taplalkozas'?'active':''}" role="button" tabindex="0" onclick="setScheduleTopView('taplalkozas')" onkeydown="kbActivate(event,()=>setScheduleTopView('taplalkozas'))">🥗 TÁPLÁLKOZÁS</div>
+      <div class="subtab ${App.ui.scheduleTopView==='feladatok'?'active':''}" role="button" tabindex="0" onclick="setScheduleTopView('feladatok')" onkeydown="kbActivate(event,()=>setScheduleTopView('feladatok'))">📋 FELADATOK</div>
+      <div class="subtab ${App.ui.scheduleTopView==='naplo'?'active':''}" role="button" tabindex="0" onclick="setScheduleTopView('naplo')" onkeydown="kbActivate(event,()=>setScheduleTopView('naplo'))">🙂 NAPLÓ</div>
     </div>`;
 }
 function setScheduleTopView(v){ App.ui.scheduleTopView=v; RENDERERS.schedule(); }
@@ -1058,6 +1075,16 @@ RENDERERS.schedule = function(){
   if(App.ui.scheduleTopView==='taplalkozas'){
     el.innerHTML = scheduleTopToggleHtml() + nutritionBodyHtml();
     renderNutContent();
+    return;
+  }
+  if(App.ui.scheduleTopView==='feladatok'){
+    el.innerHTML = scheduleTopToggleHtml() + feladatokSubBodyHtml();
+    renderFeladatokSub();
+    return;
+  }
+  if(App.ui.scheduleTopView==='naplo'){
+    el.innerHTML = scheduleTopToggleHtml() + naploSubBodyHtml();
+    renderNaploSub();
     return;
   }
   el.innerHTML = scheduleTopToggleHtml() + `
