@@ -1,18 +1,26 @@
 package com.kvantum.motivapp2
 
+import android.Manifest
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.webkit.GeolocationPermissions
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebChromeClient.FileChooserParams
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.ComponentActivity
+import androidx.activity.addCallback
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 
 /**
  * The app's launcher entry point (replacing the Bubblewrap-generated LauncherActivity,
@@ -21,12 +29,61 @@ import android.webkit.WebViewClient
  *
  * Hosts a plain WebView loading the live MotivApp PWA and exposes [NativeBridge] to it
  * as `window.NativeBridge`, so notification-derived pending records written by
- * [NotificationForwarderService] can be handed to the web app.
+ * [NotificationForwarderService] can be handed to the web app; [HealthConnectBridge]
+ * as `window.AndroidHealth` (Health Connect sync), [BackupBridge] as `window.AndroidBackup`
+ * (native "save as" export) and [TrackingBridge] as `window.AndroidTracking` (background
+ * GPS tracking for the "Térkép" hike-tracking view) are wired the same way.
+ *
+ * Base class is androidx.activity.ComponentActivity, NOT plain android.app.Activity:
+ * registerForActivityResult (used below for the geolocation prompt, the file chooser,
+ * the POST_NOTIFICATIONS runtime permission, and by HealthConnectBridge/BackupBridge's
+ * own permission/document-picker flows) is only available on ComponentActivity and its
+ * subclasses. AppCompatActivity was deliberately NOT used: this app is a full-screen
+ * WebView with no ActionBar/Toolbar or other AppCompat UI, and our manifest's
+ * application theme (@android:style/Theme.Translucent.NoTitleBar, a raw platform theme)
+ * is incompatible with AppCompatActivity's AppCompat theme machinery - that exact
+ * combination crashed at startup in the separate reference project this Health
+ * Connect/backup/tracking port is based on. Plain ComponentActivity avoids that crash
+ * entirely while still providing registerForActivityResult.
  */
-class MainWebViewActivity : Activity() {
+class MainWebViewActivity : ComponentActivity() {
 
     private lateinit var webView: WebView
     private lateinit var nativeBridge: NativeBridge
+    private lateinit var healthConnectBridge: HealthConnectBridge
+
+    private var pendingGeoOrigin: String? = null
+    private var pendingGeoCallback: GeolocationPermissions.Callback? = null
+    private var pendingFilePathCallback: ValueCallback<Array<Uri>>? = null
+
+    private val locationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+            val granted = results[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                results[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+            val origin = pendingGeoOrigin
+            val callback = pendingGeoCallback
+            pendingGeoOrigin = null
+            pendingGeoCallback = null
+            callback?.invoke(origin, granted, false)
+        }
+
+    // Backs the WebView's file chooser (see onShowFileChooser below) - without this,
+    // the "Adatok importálása" button's <input type="file"> silently opens nothing in
+    // the WebView, since plain WebView has no built-in file-picker UI of its own.
+    private val getContentLauncher =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            val callback = pendingFilePathCallback
+            pendingFilePathCallback = null
+            callback?.onReceiveValue(if (uri != null) arrayOf(uri) else null)
+        }
+
+    // Android 13+ (API 33) requires a runtime permission to post notifications -
+    // without requesting it, native notifications (tracking's foreground-service
+    // notification, and a future native-reminders feature) would silently never show.
+    // We don't care about the result here: if denied, the relevant feature just
+    // quietly skips notifying, it doesn't crash.
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     private val pendingNotificationReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -34,9 +91,27 @@ class MainWebViewActivity : Activity() {
         }
     }
 
+    init {
+        onBackPressedDispatcher.addCallback(this) {
+            if (::webView.isInitialized && webView.canGoBack()) {
+                webView.goBack()
+            } else {
+                isEnabled = false
+                onBackPressedDispatcher.onBackPressed()
+            }
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
 
         webView = WebView(this)
         setContentView(webView)
@@ -50,13 +125,23 @@ class MainWebViewActivity : Activity() {
             databaseEnabled = true
             cacheMode = WebSettings.LOAD_DEFAULT
             mediaPlaybackRequiresUserGesture = false
+            // Needed for onGeolocationPermissionsShowPrompt (below) to ever fire at all -
+            // WebView geolocation is off by default. Backs the web app's watchPosition
+            // GPS tracking ("Térkép" view).
+            setGeolocationEnabled(true)
+            // allowFileAccess=false: this app only ever loads the live https:// PWA (see
+            // LAUNCH_URL below), so it never needs general filesystem access from WebView
+            // content (e.g. file:///sdcard/...). The file CHOOSER (input type="file",
+            // handled natively via onShowFileChooser below) is unaffected by this setting.
+            // Defense in depth: narrows the attack surface with no functional change.
+            allowFileAccess = false
         }
 
         webView.webViewClient = object : WebViewClient() {
             // Deliberately overriding only the (WebView, String) overload rather than
-            // the WebResourceRequest one added in API 24: minSdkVersion is 21, and the
-            // framework's default WebResourceRequest overload just forwards to this one,
-            // so this single override behaves correctly on every supported API level.
+            // the WebResourceRequest one added in API 24: the framework's default
+            // WebResourceRequest overload just forwards to this one, so this single
+            // override behaves correctly on every supported API level.
             override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
                 val uri = Uri.parse(url)
                 return if (uri.host == LAUNCH_HOST) {
@@ -67,14 +152,74 @@ class MainWebViewActivity : Activity() {
                 }
             }
         }
-        webView.webChromeClient = WebChromeClient()
+
+        webView.webChromeClient = object : WebChromeClient() {
+            // Backs navigator.geolocation (watchPosition/getCurrentPosition) in the web
+            // app's "Térkép" hike-tracking view. Without this override, the WebView's
+            // default WebChromeClient silently denies every geolocation prompt.
+            override fun onGeolocationPermissionsShowPrompt(
+                origin: String?,
+                callback: GeolocationPermissions.Callback?
+            ) {
+                if (origin == null || callback == null) return
+                val fine = ContextCompat.checkSelfPermission(
+                    this@MainWebViewActivity, Manifest.permission.ACCESS_FINE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+                val coarse = ContextCompat.checkSelfPermission(
+                    this@MainWebViewActivity, Manifest.permission.ACCESS_COARSE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+                if (!fine && !coarse) {
+                    pendingGeoOrigin = origin
+                    pendingGeoCallback = callback
+                    locationPermissionLauncher.launch(
+                        arrayOf(
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            Manifest.permission.ACCESS_COARSE_LOCATION
+                        )
+                    )
+                } else {
+                    callback.invoke(origin, true, false)
+                }
+            }
+
+            // Backs the "Adatok importálása" button's <input type="file"> - see
+            // getContentLauncher above.
+            override fun onShowFileChooser(
+                view: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+                // Only one still-pending request can exist at a time - if a previous one
+                // was somehow left pending, close it out with an empty result before
+                // starting the new one (this is the WebView's documented expectation).
+                pendingFilePathCallback?.onReceiveValue(null)
+                pendingFilePathCallback = filePathCallback
+                val mimeType = fileChooserParams?.acceptTypes?.firstOrNull { it.isNotBlank() } ?: "*/*"
+                return try {
+                    getContentLauncher.launch(mimeType)
+                    true
+                } catch (e: Exception) {
+                    pendingFilePathCallback = null
+                    false
+                }
+            }
+        }
 
         nativeBridge = NativeBridge(this, webView)
         webView.addJavascriptInterface(nativeBridge, "NativeBridge")
 
-        if (savedInstanceState == null) {
-            webView.loadUrl(LAUNCH_URL)
-        }
+        healthConnectBridge = HealthConnectBridge(this, webView)
+        webView.addJavascriptInterface(healthConnectBridge, "AndroidHealth")
+        // Idempotent (ExistingPeriodicWorkPolicy.KEEP): a no-op if already scheduled.
+        // HealthSyncWorker itself checks at run time whether Health Connect permission
+        // has even been granted - without it, it silently returns - so this is safe to
+        // call unconditionally on every app start, regardless of permission state.
+        HealthSyncScheduler.schedule(applicationContext)
+
+        webView.addJavascriptInterface(BackupBridge(this), "AndroidBackup")
+        webView.addJavascriptInterface(TrackingBridge(this), "AndroidTracking")
+
+        webView.loadUrl(LAUNCH_URL)
 
         // In case a notification arrived while the app wasn't running at all.
         checkPendingNotifications()
@@ -103,12 +248,9 @@ class MainWebViewActivity : Activity() {
         }
     }
 
-    override fun onBackPressed() {
-        if (webView.canGoBack()) {
-            webView.goBack()
-        } else {
-            super.onBackPressed()
-        }
+    override fun onDestroy() {
+        healthConnectBridge.cancel()
+        super.onDestroy()
     }
 
     /** Called on the UI thread from onCreate/onResume and from

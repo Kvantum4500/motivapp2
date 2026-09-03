@@ -26,15 +26,41 @@
          Custom-Tabs-based LauncherActivity below, so it needs its own network access. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Backs navigator.geolocation in the WebView (Térkép hike-tracking view, see
+         MainWebViewActivity's onGeolocationPermissionsShowPrompt) and the native
+         background GPS tracking foreground service below (TrackingBridge/
+         TrackingForegroundService). -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- For TrackingForegroundService (hike tracking continues locked/backgrounded). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- Android 13+ runtime notification permission (requested in
+         MainWebViewActivity.onCreate) - needed for TrackingForegroundService's ongoing
+         notification, and for a future native-reminders feature. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Health Connect (window.AndroidHealth) read permissions - see
+         HealthConnectBridge/HealthDataFetcher/HealthSyncWorker. -->
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.READ_WEIGHT" />
+    <uses-permission android:name="android.permission.health.READ_DISTANCE" />
+    <uses-permission android:name="android.permission.health.READ_FLOORS_CLIMBED" />
+    <uses-permission android:name="android.permission.health.READ_ACTIVE_CALORIES_BURNED" />
+    <uses-permission android:name="android.permission.health.READ_EXERCISE" />
 
+    <queries>
+        <package android:name="com.google.android.apps.healthdata" />
+    </queries>
 
 
 
 
     <application
         android:name="Application"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/appName"
         
@@ -89,7 +115,25 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Health Connect opens this to show the app's "why do we request this
+                 data" rationale screen. There is no dedicated rationale UI (same as the
+                 reference project this was ported from) - it just opens MainWebViewActivity. -->
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
         </activity>
+
+        <!-- Health Connect's "Manage data" screen opens the app's permission rationale
+             through this alias. -->
+        <activity-alias
+            android:name=".HealthPermissionsRationaleAlias"
+            android:exported="true"
+            android:targetActivity=".MainWebViewActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
 
         <!-- No longer the launcher (see MainWebViewActivity above) - kept exported for its
              https autoVerify deep-link intent-filter below, which still opens links to the
@@ -221,6 +265,14 @@
             </intent-filter>
         </service>
 
+        <!-- Native background GPS tracking (window.AndroidTracking) - keeps recording
+             the active hike when the screen is locked or the app is backgrounded, which
+             a pure WebView/JS watchPosition cannot do on its own. See
+             TrackingBridge/TrackingForegroundService/TrackPointStore. -->
+        <service
+            android:name=".TrackingForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
 
     </application>
 </manifest>
