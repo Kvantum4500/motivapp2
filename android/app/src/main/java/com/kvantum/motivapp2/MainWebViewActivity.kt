@@ -144,7 +144,16 @@ class MainWebViewActivity : ComponentActivity() {
             // override behaves correctly on every supported API level.
             override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
                 val uri = Uri.parse(url)
-                return if (uri.host == LAUNCH_HOST) {
+                // Host-only used to check here; kvantum4500.github.io is a GitHub Pages
+                // user site that ALSO hosts a second, unrelated app (an RPG campaign
+                // tracker) at a different path. A host-only check would let the WebView
+                // navigate in-place to that other app's page too, exposing every
+                // @JavascriptInterface bridge (bank data, Health Connect, backup, GPS
+                // tracking) to content this app never intended to trust. Requiring the
+                // /motivapp2/ path prefix scopes in-WebView navigation to this app only;
+                // everything else still opens externally via the Intent below.
+                val isOwnApp = uri.host == LAUNCH_HOST && (uri.path ?: "").startsWith(LAUNCH_PATH_PREFIX)
+                return if (isOwnApp) {
                     false // let the WebView handle navigation within the app's own site
                 } else {
                     startActivity(Intent(Intent.ACTION_VIEW, uri))
@@ -267,6 +276,7 @@ class MainWebViewActivity : ComponentActivity() {
 
     companion object {
         private const val LAUNCH_HOST = "kvantum4500.github.io"
+        private const val LAUNCH_PATH_PREFIX = "/motivapp2/"
         private const val LAUNCH_URL = "https://kvantum4500.github.io/motivapp2/index.html"
     }
 }
