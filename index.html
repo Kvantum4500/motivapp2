@@ -424,6 +424,7 @@ function defaultState(){
         {id:'s2',name:'Lakáscél',icon:'🏦',saved:0,target:5000000},
         {id:'s3',name:'Vésztartalék',icon:'🏦',saved:0,target:500000},
       ],
+      foodOrders:[], // {id,amount,rawText,date,appliedToDiscretionaryId} - banki/Foodora értesítésből rögzített ételrendelések
     },
     journeys:[],
     aiChat:[],
@@ -471,6 +472,7 @@ async function loadState(){
       for(const k of ['tasks','events','workouts','weightLog','healthLog','journeys','aiChat']){
         if(!Array.isArray(App.state[k])) App.state[k] = d[k];
       }
+      if(!Array.isArray(App.state.finance.foodOrders)) App.state.finance.foodOrders = d.finance.foodOrders;
       if(!App.state.skills || typeof App.state.skills !== 'object') App.state.skills = {};
       if(!App.state.aiPerm || typeof App.state.aiPerm !== 'object') App.state.aiPerm = d.aiPerm;
     } else {
@@ -2791,6 +2793,15 @@ RENDERERS.finance = function(){
     }).join('')}
     <div class="small" style="margin:-6px 0 18px;color:var(--trail-yellow);cursor:pointer;" onclick="addDiscretionarySheet()">+ Új kategória hozzáadása</div>
 
+    ${(f.foodOrders&&f.foodOrders.length)?`<div class="sectiontitle">🛵 Legutóbbi ételrendelések</div>
+    <div class="card" style="padding:4px 16px;">
+      ${f.foodOrders.slice(0,8).map(o=>`<div class="row">
+        <span style="font-size:17px;">🛵</span>
+        <div class="row-main"><div class="row-title" style="font-size:14px;">${escapeHtml(o.rawText||'').slice(0,60)||'Rendelés'}</div><span class="small muted">${escapeHtml(o.date||'')}</span></div>
+        <span class="mono small">${(o.amount||0).toLocaleString('hu-HU')} Ft</span>
+      </div>`).join('')}
+    </div>`:''}
+
     <div class="sectiontitle">🏦 Megtakarítás</div>
     ${f.savings.map((x,idx)=>{
       const pct = x.target? Math.min(100,Math.round(100*(x.saved||0)/x.target)) : 0;
@@ -2920,6 +2931,84 @@ function saveSpend(id){
   x.spent=(x.spent||0)+v;
   saveState(); closeSheet(); toast('Rögzítve'); RENDERERS.finance();
 }
+
+/* ===== NATÍV ÉRTESÍTÉS-HÍDOK (Android WebView.evaluateJavascript hívja) =====
+   window.onBankNotification / window.onFoodoraNotification: a natív oldal
+   már leszűrt, adott csomagból érkező push-értesítést jelez ide, a benne
+   feltételezett összeggel és a nyers szöveggel. A `amount` MINDIG csak
+   előtöltési javaslat - soha nem írunk vele állapotot a felhasználó
+   kifejezett "Mentés" kattintása nélkül. Érvénytelen/hiányzó összeg esetén
+   is megnyílik a lap, csak üresen/0-val előtöltve, hogy a felhasználó
+   kézzel be tudja írni. */
+window.onBankNotification = function(amount, rawText, sourcePackage){
+  const amt = (typeof amount==='number' && isFinite(amount) && amount>0) ? amount : '';
+  openBankNotificationSheet(amt, rawText||'');
+};
+window.onFoodoraNotification = function(amount, rawText){
+  const amt = (typeof amount==='number' && isFinite(amount) && amount>0) ? amount : '';
+  openFoodoraOrderSheet(amt, rawText||'');
+};
+function openBankNotificationSheet(amount, rawText){
+  const cats = App.state.finance.discretionary;
+  const chips = cats.map((x,idx)=>`<div class="chip${idx===0?' active':''}" data-id="${x.id}">${x.icon||'🛍️'} ${escapeHtml(x.name)}</div>`).join('');
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Banki értesítés</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+    ${rawText?`<div class="small muted" style="margin:-4px 0 10px;">${escapeHtml(String(rawText)).slice(0,140)}</div>`:''}
+    <div class="field"><input type="number" id="bn-amount" min="0" style="font-size:20px;text-align:center;padding:16px;" value="${amount||''}" placeholder="Ft"></div>
+    <div class="field"><label>Melyik kategóriába tartozik?</label>
+      <div class="chiprow" id="bn-cat">${chips || '<span class="small muted">Nincs kategória felvéve - vegyél fel egyet a Pénzügyeknél.</span>'}</div>
+    </div>
+    <button class="btn btn-primary btn-block" onclick="saveBankNotification()">Mentés</button>`);
+  document.querySelectorAll('#bn-cat .chip').forEach(c=>c.addEventListener('click',()=>{
+    document.querySelectorAll('#bn-cat .chip').forEach(x=>x.classList.remove('active')); c.classList.add('active');
+  }));
+}
+function saveBankNotification(){
+  const v = parseFloat(document.getElementById('bn-amount').value);
+  if(!v || !isFinite(v) || v<=0){ toast('Adj meg egy érvényes összeget'); return; }
+  const activeChip = document.querySelector('#bn-cat .chip.active');
+  if(!activeChip){ toast('Válassz kategóriát'); return; }
+  const x = App.state.finance.discretionary.find(i=>i.id===activeChip.dataset.id);
+  if(!x){ toast('Kategória nem található'); return; }
+  x.spent=(x.spent||0)+v;
+  saveState(); closeSheet(); toast('Elmentve'); RENDERERS.finance();
+}
+/* findFoodDiscretionaryCategory: a meglévő "Egyéb kategóriák" (discretionary)
+   listából megkeresi az étterem/kávé jellegű tételt (alapértelmezésben
+   "Étterem/Kávé" ☕ id=d5) - nem hoz létre új, párhuzamos kategóriát. */
+function findFoodDiscretionaryCategory(){
+  const list = App.state.finance.discretionary;
+  return list.find(x=>/☕|🍔|🍕|🍽️/.test(x.icon||''))
+    || list.find(x=>/étterem|kávé|foodora|étel|rendelés/i.test(x.name||''))
+    || null;
+}
+let _pendingFoodoraOrder = null; // {catId, rawText} - a jelenleg nyitott Foodora-lap kontextusa
+function openFoodoraOrderSheet(amount, rawText){
+  const cat = findFoodDiscretionaryCategory();
+  _pendingFoodoraOrder = {catId: cat?cat.id:null, rawText:String(rawText||'')};
+  let statusHtml;
+  if(cat){
+    const pct = cat.limit ? Math.min(100, Math.round(100*(cat.spent||0)/cat.limit)) : 0;
+    statusHtml = `<div class="small muted" style="margin:-4px 0 12px;">${cat.icon||'☕'} ${escapeHtml(cat.name)}: ${(cat.spent||0).toLocaleString('hu-HU')} Ft / ${(cat.limit||0).toLocaleString('hu-HU')} Ft keret felhasználva (${pct}%)</div>`;
+  } else {
+    statusHtml = `<div class="small muted" style="margin:-4px 0 12px;">Nincs "Étterem/Kávé" jellegű kategória felvéve, vegyél fel egyet a Pénzügyeknél a mentéshez.</div>`;
+  }
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Foodora rendelés</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+    ${rawText?`<div class="small muted" style="margin:-4px 0 10px;">${escapeHtml(String(rawText)).slice(0,140)}</div>`:''}
+    ${statusHtml}
+    <div class="field"><input type="number" id="fo-amount" min="0" style="font-size:20px;text-align:center;padding:16px;" value="${amount||''}" placeholder="Ft"></div>
+    <button class="btn btn-primary btn-block" onclick="saveFoodoraOrder()">Mentés</button>`);
+}
+function saveFoodoraOrder(){
+  const ctx = _pendingFoodoraOrder || {};
+  const v = parseFloat(document.getElementById('fo-amount').value);
+  if(!v || !isFinite(v) || v<=0){ toast('Adj meg egy érvényes összeget'); return; }
+  const x = App.state.finance.discretionary.find(i=>i.id===ctx.catId);
+  if(!x){ toast('Nincs megfelelő kategória felvéve az étkezéshez'); return; }
+  App.state.finance.foodOrders.unshift({id:uid(), amount:v, rawText:ctx.rawText||'', date:todayISO(), appliedToDiscretionaryId:x.id});
+  x.spent=(x.spent||0)+v;
+  saveState(); closeSheet(); toast('Rögzítve'); RENDERERS.finance();
+}
+
 function manageDiscretionarySheet(id){
   const x=App.state.finance.discretionary.find(i=>i.id===id); if(!x) return;
   const idx=App.state.finance.discretionary.findIndex(i=>i.id===id);
@@ -3288,6 +3377,7 @@ function applyImportedJson(text){
   }
   if(!Array.isArray(next.finance.discretionary)) next.finance.discretionary = d.finance.discretionary;
   if(!Array.isArray(next.finance.savings)) next.finance.savings = d.finance.savings;
+  if(!Array.isArray(next.finance.foodOrders)) next.finance.foodOrders = d.finance.foodOrders;
   for(const k of ['tasks','events','workouts','weightLog','healthLog','journeys','aiChat']){
     if(!Array.isArray(next[k])) next[k] = d[k];
   }
