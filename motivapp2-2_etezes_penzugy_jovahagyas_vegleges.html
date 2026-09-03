@@ -848,6 +848,20 @@ function taskRowHtml(t, afterToggle){
       <span class="g" style="cursor:pointer;padding-top:2px;" onclick="editTaskProgress('${t.id}')">✏️</span>
     </div>`;
   }
+  if(t.type==='steps'){
+    const steps = t.steps||[];
+    const done = steps.filter(s=>s.done).length;
+    const total = steps.length;
+    const pct = total? Math.round(done/total*100) : 0;
+    return `<div class="row" style="align-items:flex-start;cursor:pointer;" onclick="openStepsChecklistSheet('${t.id}')">
+      <div class="row-main">
+        <div class="row-title" style="font-size:14px;">${escapeHtml(t.title)}</div>
+        <div class="progwrap" style="margin:7px 0 4px;"><div class="progbar" style="width:${pct}%"></div></div>
+        <div class="small muted">${done}/${total} lépés kész</div>
+      </div>
+      <span class="g" style="padding-top:2px;">📋</span>
+    </div>`;
+  }
   return `<div class="row">
     <div class="row-check ${t.done?'done':''}" onclick="toggleTask('${t.id}');${afterToggle||''}">${t.done?'✓':''}</div>
     <div class="row-main"><div class="row-title ${t.done?'done':''}">${escapeHtml(t.title)}</div>
@@ -879,7 +893,7 @@ function openAddTaskSheet(presetDate){
     <div class="field"><label>Határidő</label><input type="date" id="nt-due" value="${presetDate||todayISO()}"></div>
     <div class="field"><label>Típus</label>
       <div class="chiprow" id="nt-type">
-        <div class="chip active" data-v="checkbox">✓ Pipálható</div><div class="chip" data-v="percent">% Százalékos</div>
+        <div class="chip active" data-v="checkbox">✓ Pipálható</div><div class="chip" data-v="percent">% Százalékos</div><div class="chip" data-v="steps">📋 Lépéssor</div>
       </div>
     </div>
     <div class="field"><label>Prioritás</label>
@@ -902,8 +916,112 @@ function saveNewTask(){
   const due = document.getElementById('nt-due').value;
   const prio = document.querySelector('#nt-prio .chip.active').dataset.v;
   const type = document.querySelector('#nt-type .chip.active').dataset.v;
-  App.state.tasks.push({id:uid(),title,due,priority:prio,type,done:false,progress:0});
-  saveState(); closeSheet(); toast('Feladat hozzáadva'); renderApp();
+  const task = {id:uid(),title,due,priority:prio,type,done:false};
+  if(type==='steps') task.steps=[]; else task.progress=0;
+  App.state.tasks.push(task);
+  saveState();
+  if(type==='steps'){
+    toast('Feladat hozzáadva'); renderApp(); renderFeladatokSub();
+    openEditStepsSheet(task.id);
+  } else {
+    closeSheet(); toast('Feladat hozzáadva'); renderApp(); renderFeladatokSub();
+  }
+}
+/* Feladatkezelő - lépéssoros feladatok (type:'steps'): a tasks tömb elemei
+   ilyenkor steps:[{id,text,done}] tömböt kapnak progress helyett.
+   openEditStepsSheet()/saveEditedSteps() a lépések listáját szerkeszti
+   (új lépéssoros feladatnál saveNewTask() ezt nyitja meg folytatásként,
+   meglévőnél a pipálható nézet ✏️ gombja), openStepsChecklistSheet()/
+   toggleStepDone() a pipálható nézetet adja. feladatokSubBodyHtml()/
+   renderFeladatokSub() a teljes Feladatkezelő nézetet adja - ezt a két
+   nevet egy másik ág már a nevük alapján hívja, ezért a nevük nem
+   változtatható. */
+let _stepsDraft = null;
+function openEditStepsSheet(id){
+  const t = App.state.tasks.find(x=>x.id===id); if(!t) return;
+  _stepsDraft = {taskId:id, steps:(t.steps||[]).map(s=>({id:s.id,text:s.text}))};
+  renderStepsEditSheet();
+}
+function renderStepsEditSheet(){
+  const d = _stepsDraft; if(!d) return;
+  const t = App.state.tasks.find(x=>x.id===d.taskId);
+  openSheet(`
+    <div class="sheet-head"><div class="sheet-title">Lépések${t?': '+escapeHtml(t.title):''}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+    <div class="card" style="padding:4px 16px;margin-bottom:12px;">
+      ${d.steps.length? d.steps.map((s,i)=>`<div class="row"><div class="row-main"><div class="row-title" style="font-size:14px;">${i+1}. ${escapeHtml(s.text)}</div></div><span class="g" style="cursor:pointer;" onclick="removeStepDraft(${i})">✕</span></div>`).join('') : `<div class="small muted" style="padding:12px 0;">Még nincs lépés hozzáadva.</div>`}
+    </div>
+    <div class="field"><label>Új lépés</label><input type="text" id="sd-text" placeholder="Pl. hagymát megdinsztelni" onkeydown="if(event.key==='Enter'){event.preventDefault();addStepDraft();}"></div>
+    <button class="btn btn-secondary btn-block" style="margin-bottom:10px;" onclick="addStepDraft()">+ Lépés hozzáadása</button>
+    <button class="btn btn-primary btn-block" onclick="saveEditedSteps()">Kész</button>
+  `);
+  document.getElementById('sd-text')?.focus();
+}
+function addStepDraft(){
+  const inp = document.getElementById('sd-text'); if(!inp) return;
+  const text = inp.value.trim();
+  if(!text) return;
+  _stepsDraft.steps.push({id:uid(),text});
+  renderStepsEditSheet();
+}
+function removeStepDraft(idx){
+  _stepsDraft.steps.splice(idx,1);
+  renderStepsEditSheet();
+}
+function saveEditedSteps(){
+  const d = _stepsDraft; if(!d) return;
+  const t = App.state.tasks.find(x=>x.id===d.taskId);
+  if(!t){ _stepsDraft=null; closeSheet(); return; }
+  const prevDone = {}; (t.steps||[]).forEach(s=>{ prevDone[s.id]=s.done; });
+  t.steps = d.steps.map(s=>({id:s.id, text:s.text, done:prevDone[s.id]||false}));
+  _stepsDraft = null;
+  saveState(); closeSheet(); toast('Lépések mentve'); renderApp(); renderFeladatokSub();
+}
+function openStepsChecklistSheet(id){
+  const t = App.state.tasks.find(x=>x.id===id); if(!t) return;
+  openSheet(`
+    <div class="sheet-head"><div class="sheet-title">${escapeHtml(t.title)}</div><div class="flex gap8"><span class="g" style="cursor:pointer;" onclick="openEditStepsSheet('${id}')">✏️</span><button class="iconbtn" onclick="closeSheet()">✕</button></div></div>
+    <div id="steps-checklist-list"></div>
+  `);
+  renderStepsChecklistList(id);
+}
+function renderStepsChecklistList(id){
+  const c = document.getElementById('steps-checklist-list'); if(!c) return;
+  const t = App.state.tasks.find(x=>x.id===id); if(!t) return;
+  const steps = t.steps||[];
+  c.innerHTML = steps.length? steps.map(s=>`
+    <div class="row">
+      <div class="row-check ${s.done?'done':''}" onclick="toggleStepDone('${id}','${s.id}')">${s.done?'✓':''}</div>
+      <div class="row-main"><div class="row-title ${s.done?'done':''}">${escapeHtml(s.text)}</div></div>
+    </div>`).join('') : `<div class="empty"><div class="ic">📋</div><div class="t">Még nincs lépés</div><div class="d">Add hozzá a fejlécben lévő ✏️ gombbal.</div></div>`;
+}
+function toggleStepDone(taskId, stepId){
+  const t = App.state.tasks.find(x=>x.id===taskId); if(!t) return;
+  const s = (t.steps||[]).find(x=>x.id===stepId); if(!s) return;
+  s.done = !s.done;
+  saveState();
+  renderStepsChecklistList(taskId);
+  renderFeladatokSub();
+}
+function _feladatokListHtml(){
+  const all = App.state.tasks.slice().sort((a,b)=>(a.due||'').localeCompare(b.due||''));
+  const plain = all.filter(t=>t.type!=='steps');
+  const steps = all.filter(t=>t.type==='steps');
+  return `
+    <div class="sectiontitle">Feladatok</div>
+    <div class="card" style="padding:4px 16px;">${plain.length? plain.map(t=>taskRowHtml(t,'renderFeladatokSub();')).join('') : `<div class="empty"><div class="ic">📋</div><div class="t">Nincs feladat</div></div>`}</div>
+    <div class="sectiontitle">Lépéssoros feladatok</div>
+    <div class="card" style="padding:4px 16px;">${steps.length? steps.map(t=>taskRowHtml(t)).join('') : `<div class="empty"><div class="ic">📋</div><div class="t">Nincs lépéssoros feladat</div></div>`}</div>
+  `;
+}
+function feladatokSubBodyHtml(){
+  return `
+    <div class="sectiontitle">Feladatkezelő <span class="g small" style="cursor:pointer;" onclick="openAddTaskSheet()">+ Új feladat</span></div>
+    <div id="feladatok-sub-content">${_feladatokListHtml()}</div>
+  `;
+}
+function renderFeladatokSub(){
+  const c = document.getElementById('feladatok-sub-content'); if(!c) return;
+  c.innerHTML = _feladatokListHtml();
 }
 function quickLogSheet(field,label,icon){
   const iso=todayISO();
