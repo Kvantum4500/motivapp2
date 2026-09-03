@@ -22,13 +22,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.kvantum.motivapp2">
 
-    
+    <!-- MainWebViewActivity hosts a plain WebView loading a remote https URL, unlike the
+         Custom-Tabs-based LauncherActivity below, so it needs its own network access. -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
-    
 
-    
 
-    
+
+
+
 
     <application
         android:name="Application"
@@ -74,6 +76,24 @@
             </activity>
         
 
+        <!-- App's launcher entry point: a plain WebView loading the live PWA directly,
+             with NativeBridge exposed as window.NativeBridge for notification-derived
+             data (see MainWebViewActivity.kt / NativeBridge.kt / NotificationForwarderService.kt).
+             LauncherActivity below is kept for its https deep-link intent-filter but is
+             no longer the launcher. -->
+        <activity android:name=".MainWebViewActivity"
+            android:label="@string/launcherName"
+            android:exported="true"
+            android:configChanges="orientation|screenSize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- No longer the launcher (see MainWebViewActivity above) - kept exported for its
+             https autoVerify deep-link intent-filter below, which still opens links to the
+             site in the TWA/Custom-Tabs experience. -->
         <activity android:name="LauncherActivity"
             android:alwaysRetainTaskState="true"
             android:label="@string/launcherName"
@@ -137,11 +157,6 @@
 
             
 
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT" />
@@ -177,7 +192,7 @@
             android:enabled="@bool/enableNotification"
             android:exported="@bool/enableNotification">
 
-            
+
 
             <intent-filter>
                 <action android:name="android.support.customtabs.trusted.TRUSTED_WEB_ACTIVITY_SERVICE"/>
@@ -185,8 +200,27 @@
             </intent-filter>
         </service>
 
-        
+        <!-- Notification-listener service for a hardcoded, non-configurable set of
+             bank/food notification sources - see NotificationForwarderService.kt for the
+             exact package allow-list. There is intentionally no in-app UI to change it.
 
-        
+             Notification access is a system-level special app access the user has to
+             grant manually, per app, via Settings > Apps > Special app access >
+             Notification access (i.e. an Intent with action
+             Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS). This declaration alone does
+             not request or enable that access - it just makes the service available for
+             the system to bind once granted. Whoever builds the in-app onboarding flow
+             for it should deep-link to that settings screen. -->
+        <service
+            android:name=".NotificationForwarderService"
+            android:label="@string/appName"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+
     </application>
 </manifest>

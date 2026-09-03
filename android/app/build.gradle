@@ -18,6 +18,13 @@ import groovy.xml.MarkupBuilder
 
 plugins {
     id 'com.android.application'
+    // Only MainWebViewActivity/NotificationForwarderService/NativeBridge/
+    // PendingNotificationStore are Kotlin; everything else in this module stays
+    // Java, matching how it was generated. Version pinned explicitly here (rather
+    // than via a buildscript classpath, like the AGP plugin above) because this
+    // plugin is resolved from the Gradle Plugin Portal through the `plugins {}`
+    // block, independent of the allprojects{repositories{}} used for dependencies.
+    id 'org.jetbrains.kotlin.android' version '2.0.21'
 }
 
 def twaManifest = [
@@ -156,6 +163,9 @@ android {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
+    kotlinOptions {
+        jvmTarget = "1.8"
+    }
     lintOptions {
         checkReleaseBuilds false
     }
@@ -187,7 +197,9 @@ task generateShorcutsFile {
                     'intent'(
                             'android:action': 'android.intent.action.MAIN',
                             'android:targetPackage': twaManifest.applicationId,
-                            'android:targetClass': twaManifest.applicationId + '.LauncherActivity',
+                            // MainWebViewActivity is now the launcher entry point (see
+                            // AndroidManifest.xml); shortcuts should target it too.
+                            'android:targetClass': twaManifest.applicationId + '.MainWebViewActivity',
                             'android:data': s.url)
                     'categories'('android:name': 'android.intent.category.LAUNCHER')
                 }
@@ -204,7 +216,14 @@ repositories {
 
 dependencies {
     implementation fileTree(include: ['*.jar'], dir: 'libs')
-    
+
         implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.6.2'
-    
+
+
+    // Jetpack Security Crypto - backs PendingNotificationStore's use of
+    // EncryptedSharedPreferences (Android-Keystore-backed AES-256-GCM). 1.1.0 is the
+    // current stable release (July 2025); its APIs were deprecated in-place in favor of
+    // using Android Keystore directly, but they still work and this is what's specified
+    // for this feature, so we pin the last stable release rather than an alpha.
+    implementation 'androidx.security:security-crypto:1.1.0'
 }

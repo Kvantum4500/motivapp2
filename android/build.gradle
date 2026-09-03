@@ -33,7 +33,11 @@ buildscript {
 allprojects {
     repositories {
         google()
+        // jcenter() is long shut down (2021) and is kept only because it was already
+        // here; mavenCentral() is what actually resolves the Kotlin stdlib and the
+        // Tink crypto library that androidx.security:security-crypto depends on.
         jcenter()
+        mavenCentral()
     }
 }
 
