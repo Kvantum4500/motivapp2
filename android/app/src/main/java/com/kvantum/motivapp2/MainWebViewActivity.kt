@@ -219,9 +219,7 @@ class MainWebViewActivity : ComponentActivity() {
         webView.addJavascriptInterface(BackupBridge(this), "AndroidBackup")
         webView.addJavascriptInterface(TrackingBridge(this), "AndroidTracking")
 
-        if (savedInstanceState == null) {
-            webView.loadUrl(LAUNCH_URL)
-        }
+        webView.loadUrl(LAUNCH_URL)
 
         // In case a notification arrived while the app wasn't running at all.
         checkPendingNotifications()

@@ -796,6 +796,25 @@ RENDERERS.ma = function(){
           <div class="small muted">❤️ Pulzus</div>
         </div>
       </div>
+      ${(todayHealth.distanceKm!=null || todayHealth.floorsClimbed!=null || todayHealth.caloriesBurned!=null || todayHealth.exerciseMin!=null) ? `
+      <div class="flex between" style="gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">
+        <div class="tap" style="flex:1;text-align:center;cursor:pointer;" onclick="quickLogSheet('distanceKm','Megtett táv (km)','🚶')">
+          <div class="big" style="font-size:16px;">${todayHealth.distanceKm!=null? fmtHealthNum(todayHealth.distanceKm,1)+' km' : '—'}</div>
+          <div class="small muted">🚶 Táv</div>
+        </div>
+        <div class="tap" style="flex:1;text-align:center;cursor:pointer;" onclick="quickLogSheet('floorsClimbed','Megmászott szintek','🏢')">
+          <div class="big" style="font-size:16px;">${todayHealth.floorsClimbed!=null? fmtHealthNum(todayHealth.floorsClimbed,0) : '—'}</div>
+          <div class="small muted">🏢 Szintek</div>
+        </div>
+        <div class="tap" style="flex:1;text-align:center;cursor:pointer;" onclick="quickLogSheet('caloriesBurned','Elégetett kalória (kcal)','🔥')">
+          <div class="big" style="font-size:16px;">${todayHealth.caloriesBurned!=null? fmtHealthNum(todayHealth.caloriesBurned,0) : '—'}</div>
+          <div class="small muted">🔥 Kcal</div>
+        </div>
+        <div class="tap" style="flex:1;text-align:center;cursor:pointer;" onclick="quickLogSheet('exerciseMin','Edzésidő (perc)','⏱️')">
+          <div class="big" style="font-size:16px;">${todayHealth.exerciseMin!=null? fmtHealthNum(todayHealth.exerciseMin,0) : '—'}</div>
+          <div class="small muted">⏱️ Edzés</div>
+        </div>
+      </div>` : ''}
       <div class="small g" style="margin-top:10px;text-align:center;">Kézi napló · natív Android verzióban Health Connectből automatikusan</div>
     </div>
 
@@ -3906,10 +3925,10 @@ window.onAndroidHealthResult = function(payload){
       case 'permissions':
         App.state.healthConnect.granted = !!payload.granted;
         saveState();
-        if(payload.granted){
-          try{ androidHealthAvailable() && window.AndroidHealth.syncToday(); }
-          catch(e){ toast('Hiba a Health Connect szinkron indításakor.'); }
-        } else {
+        // A natív oldal (HealthConnectBridge.kt) engedélyezés után MAGA is azonnal
+        // meghívja a syncToday()-t (nem kell 15 percet várni az első adatra) - itt
+        // nem hívjuk meg újra, az csak egy felesleges dupla lekérdezést/toast-ot adna.
+        if(!payload.granted){
           toast('A Health Connect hozzáférés nincs engedélyezve.');
         }
         break;
