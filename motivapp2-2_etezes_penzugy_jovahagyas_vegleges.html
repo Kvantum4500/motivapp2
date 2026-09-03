@@ -324,12 +324,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.1.2';
+const APP_VERSION = '2.1.3';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.1.2';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.1.3';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -581,6 +581,15 @@ function dayTypeFor(iso){
   return pat[idx];
 }
 function escapeHtml(s){ return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// Kerekít és levágja a felesleges tizedeseket (pl. 6.133333333333334 -> 6.1,
+// 6.0 -> 6) - egészségügyi mérőszámokhoz (alvás óra, lépés, pulzus stb.),
+// amik osztásból vagy külső szinkronból (pl. jövőbeli Health Connect import)
+// származhatnak, nem csak kézi bevitelből.
+function fmtHealthNum(v, decimals){
+  if(typeof v!=='number' || !isFinite(v)) return '—';
+  const f = Math.pow(10, decimals||0);
+  return String(Math.round(v*f)/f);
+}
 function toast(msg){
   const t=document.getElementById('toast');
   t.textContent=msg; t.classList.add('show');
@@ -757,15 +766,15 @@ RENDERERS.ma = function(){
     <div class="card">
       <div class="flex between" style="gap:8px;">
         <div class="tap" style="flex:1;text-align:center;cursor:pointer;" onclick="quickLogSheet('sleepH','Alvás (óra)','💤')">
-          <div class="big" style="font-size:20px;">${todayHealth.sleepH? todayHealth.sleepH+' ó' : '—'}</div>
+          <div class="big" style="font-size:20px;">${todayHealth.sleepH? fmtHealthNum(todayHealth.sleepH,1)+' ó' : '—'}</div>
           <div class="small muted">💤 Alvás</div>
         </div>
         <div class="tap" style="flex:1;text-align:center;cursor:pointer;" onclick="quickLogSheet('steps','Lépésszám','👣')">
-          <div class="big" style="font-size:20px;">${todayHealth.steps? todayHealth.steps : '—'}</div>
+          <div class="big" style="font-size:20px;">${todayHealth.steps? fmtHealthNum(todayHealth.steps,0) : '—'}</div>
           <div class="small muted">👣 Lépés</div>
         </div>
         <div class="tap" style="flex:1;text-align:center;cursor:pointer;" onclick="quickLogSheet('pulse','Nyugalmi pulzus','❤️')">
-          <div class="big" style="font-size:20px;">${todayHealth.pulse? todayHealth.pulse : '—'}</div>
+          <div class="big" style="font-size:20px;">${todayHealth.pulse? fmtHealthNum(todayHealth.pulse,0) : '—'}</div>
           <div class="small muted">❤️ Pulzus</div>
         </div>
       </div>
@@ -2137,8 +2146,8 @@ function buildAiContext(){
   const tplSummary = tplKeys.length? tplKeys.map(k=>k+': '+App.state.dayTypeTemplates[k].label).join('; ') : 'nincs beállítva';
   return 'Mai valódi naptári dátum: '+iso+' (ehhez viszonyítva számolj minden jövőbeli/relatív dátumot)\nMai nap típusa: '+dt+' (belső kulcsa: '+dayTypeFor(iso)+')\nMai feladatok: '+(tasksToday.map(t=>t.title).join('; ')||'nincs')+
     '\nUtolsó edzések: '+recentW+'\nUtolsó testsúly: '+(lastW?lastW.kg+' kg':'nincs adat')+
-    '\nFeloldott skillek: '+unlocked+'\nMa naplózva — alvás: '+(h.sleepH?h.sleepH+' óra':'nincs adat')+
-    ', lépés: '+(h.steps||'nincs adat')+', pulzus: '+(h.pulse||'nincs adat')+
+    '\nFeloldott skillek: '+unlocked+'\nMa naplózva — alvás: '+(h.sleepH?fmtHealthNum(h.sleepH,1)+' óra':'nincs adat')+
+    ', lépés: '+(h.steps?fmtHealthNum(h.steps,0):'nincs adat')+', pulzus: '+(h.pulse?fmtHealthNum(h.pulse,0):'nincs adat')+
     '\nMeglévő kötelező kiadás kategóriák (ezeket a pontos neveket használd finance javaslatnál, ha van egyező): '+mandNames+
     '\nMai aktivitások és energiahatásuk: '+actSummary+'\nJelenlegi becsült energiaszint: '+(energyNow===null?'nincs mai adat':energyNow+'%')+
     '\nSaját tanult energiaátlagok tevékenységenként: '+learned+
