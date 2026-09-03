@@ -65,15 +65,14 @@ jobs:
           echo "Compare this against the sha256_cert_fingerprints entries in"
           echo "https://kvantum4500.github.io/.well-known/assetlinks.json"
 
-      # Scaffolds the Android Studio / Gradle project from twa-manifest.json.
-      # --skipVersionUpgrade avoids an interactive "enter a new app version" prompt.
-      # Running this first also writes manifest-checksum.txt, so the subsequent
-      # `bubblewrap build` sees an up-to-date checksum and skips its own
-      # "update the project?" confirmation prompt - the whole pipeline runs
-      # non-interactively end to end.
-      - name: bubblewrap update (scaffold Android project)
-        run: bubblewrap update --skipVersionUpgrade
-
+      # The Android/Gradle project under android/app (and friends) is now
+      # committed source - see the "Scaffold Android project" workflow and
+      # its PR. Do NOT run `bubblewrap update` here: it would regenerate the
+      # project from twa-manifest.json on every build and silently overwrite
+      # any native customizations (NotificationListenerService, WebView
+      # bridge, etc.) added to the committed project since. `bubblewrap
+      # build` only compiles/signs the existing project - it doesn't
+      # regenerate it - so it's safe to run directly.
       - name: bubblewrap build (compile + sign APK and AAB)
         env:
           BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
