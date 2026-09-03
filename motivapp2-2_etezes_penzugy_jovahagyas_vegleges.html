@@ -430,6 +430,7 @@ function defaultState(){
     journal:[], // {id,date,mood(1-5),text} - hangulatnapló bejegyzések
     aiChat:[],
     aiPerm:{auto:true,confirmCalendar:true,confirmPlan:true},
+    healthConnect:{granted:false,lastSyncAt:null}, // natív Health Connect szinkron állapota (ld. window.AndroidHealth)
     settingsMeta:{createdAt:Date.now()},
     lastBackupAt:null // utolsó sikeres fájlmentés ISO időbélyege (ld. saveToFile())
   };
@@ -476,6 +477,7 @@ async function loadState(){
       if(!Array.isArray(App.state.finance.foodOrders)) App.state.finance.foodOrders = d.finance.foodOrders;
       if(!App.state.skills || typeof App.state.skills !== 'object') App.state.skills = {};
       if(!App.state.aiPerm || typeof App.state.aiPerm !== 'object') App.state.aiPerm = d.aiPerm;
+      if(!App.state.healthConnect || typeof App.state.healthConnect !== 'object') App.state.healthConnect = d.healthConnect;
     } else {
       App.state = defaultState();
     }
@@ -2074,7 +2076,7 @@ function renderTrackView(c){
       ${!App.ui.tracking? `<button class="btn btn-primary btn-block" onclick="startTracking()">▶️ Túra indítása</button>`
         : `<button class="btn btn-danger btn-block" onclick="stopTracking()">⏹️ Túra leállítása</button>`}
       ${App.ui.trackError? `<div class="small" style="margin-top:12px;padding:10px;border-radius:10px;background:var(--trail-red-bg);color:#E8A392;text-align:left;line-height:1.5;">⚠️ ${escapeHtml(App.ui.trackError)}</div>` : ''}
-      <div class="small g" style="margin-top:14px;line-height:1.5;text-align:left;">Amíg ez az ablak nyitva van és világít a kijelző, böngészőből követi az utat. Lezárt kijelzőnél / háttérbe küldve a követés megszakadhat — ezt a natív Android verzió oldja meg teljesen.</div>
+      <div class="small g" style="margin-top:14px;line-height:1.5;text-align:left;">${(typeof window.AndroidTracking!=='undefined' && window.AndroidTracking) ? 'Natív alkalmazás — lezárt kijelzőnél vagy háttérbe küldve is folytatódik a rögzítés (értesítés jelzi, amíg fut).' : 'Amíg ez az ablak nyitva van és világít a kijelző, böngészőből követi az utat. Lezárt kijelzőnél / háttérbe küldve a követés megszakadhat — ezt a natív Android verzió oldja meg teljesen.'}</div>
       <button class="btn btn-ghost btn-sm" style="margin-top:10px;" onclick="testGpsDiag()">GPS diagnosztika</button>
     </div>
   `;
@@ -2103,6 +2105,30 @@ function saveTrackDraft(){
   App.state.trackDraft = { points: App.ui.trackPoints, start: App.ui.trackStart, savedAt: Date.now() };
   saveState();
 }
+/* A natív TrackingForegroundService (ld. Kotlin oldal, TrackingBridge.kt) a
+   WebView-tól/JS-től teljesen függetlenül, zárolt kijelzőnél/háttérbe küldött
+   appnál is gyűjti a GPS-pontokat, natívan eltárolva őket. Ez a függvény kérdezi
+   le és üríti ki ezt a natív tárolót, és ugyanúgy fűzi az App.ui.trackPoints
+   tömbhöz, mint az élő, watchPosition-ből érkező pontokat (ld. lent) - a
+   projektnek jelenleg nincs külön GPS-zajszűrő rétege (shouldAcceptTrackPoint),
+   ezért a natív pontok is ugyanazt a szűretlen kezelést kapják. Böngészőben/
+   telepített webes verzióban window.AndroidTracking nincs jelen, ott ez no-op. */
+function pullNativeTrackPoints(){
+  if(typeof window.AndroidTracking==='undefined' || !window.AndroidTracking) return;
+  try{
+    const json = window.AndroidTracking.takePendingPointsJson();
+    if(!json) return;
+    const points = JSON.parse(json);
+    if(!Array.isArray(points) || !points.length) return;
+    for(const p of points){
+      if(p && typeof p.lat==='number' && typeof p.lng==='number' && typeof p.t==='number'){
+        App.ui.trackPoints.push({lat:p.lat,lng:p.lng,t:p.t});
+      }
+    }
+    if(App.ui.trackPoints.length % TRACK_DRAFT_POINT_INTERVAL === 0){ saveTrackDraft(); _trackDraftLastSave=Date.now(); }
+    renderTrackView();
+  }catch(e){ console.warn('pullNativeTrackPoints hiba', e); }
+}
 function startTracking(resumeDraft){
   if(!navigator.geolocation){ App.ui.trackError='A böngésző/környezet nem támogatja a helymeghatározást.'; renderTrackView(); return; }
   if(resumeDraft && App.state.trackDraft && App.state.trackDraft.points && App.state.trackDraft.points.length>=2){
@@ -2124,9 +2150,23 @@ function startTracking(resumeDraft){
   );
   clearInterval(_trackTimer);
   _trackDraftLastSave=Date.now();
+  // A natív túrakövető foreground service indítása (ld. TrackingBridge/
+  // TrackingForegroundService, Kotlin oldal) - böngészőben/webes verzióban
+  // window.AndroidTracking nincs jelen, ott ez no-op. Natív appban, ha a
+  // helymeghatározás engedélye még nincs megadva, a natív oldal csendben
+  // kihagyja az indítást (nem omlik össze) - a lenti időzítő minden
+  // másodpercben újrapróbálja, tehát amint a felhasználó megadja az
+  // engedélyt (a fenti watchPosition kéri ki), a következő ütésre elindul.
+  if(typeof window.AndroidTracking!=='undefined' && window.AndroidTracking){
+    try{ window.AndroidTracking.start(); }catch(e){}
+  }
   _trackTimer=setInterval(()=>{
     if(App.ui.terkepView==='track') renderTrackView();
     if(App.ui.tracking && Date.now()-_trackDraftLastSave>=TRACK_DRAFT_MS_INTERVAL){ saveTrackDraft(); _trackDraftLastSave=Date.now(); }
+    if(App.ui.tracking && typeof window.AndroidTracking!=='undefined' && window.AndroidTracking){
+      try{ window.AndroidTracking.start(); }catch(e){} // idempotens újrapróbálkozás, ld. fent
+      pullNativeTrackPoints();
+    }
   },1000);
   if('wakeLock' in navigator){
     navigator.wakeLock.request('screen').then(wl=>{ _wakeLock=wl; }).catch(err=>{ /* nem támogatott / megtagadva – csendben figyelmen kívül hagyjuk, ez csak kijelző-ébrentartás előtérben */ });
@@ -2136,6 +2176,10 @@ function startTracking(resumeDraft){
 function stopTracking(){
   if(App.ui.watchId!=null) navigator.geolocation.clearWatch(App.ui.watchId);
   clearInterval(_trackTimer);
+  pullNativeTrackPoints(); // utolsó, még fel nem dolgozott natív pontok bevétele lezárás előtt
+  if(typeof window.AndroidTracking!=='undefined' && window.AndroidTracking){
+    try{ window.AndroidTracking.stop(); }catch(e){}
+  }
   App.ui.tracking=false;
   if(_wakeLock){ _wakeLock.release().catch(()=>{}); _wakeLock=null; }
   if(App.ui.trackPoints.length>=2){ saveTrackDraft(); openSaveJourneySheet(); }
@@ -3571,9 +3615,20 @@ function buildExportPayload(){
 }
 function exportData(){
   const payload = buildExportPayload();
-  const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+  const json = JSON.stringify(payload,null,2);
+  const filename = 'motivapp-mentes-'+todayISO()+'.json';
+  /* A natív Android WebView nem kezeli le a lenti <a download> blob-linket (nincs
+     beépített letöltés-támogatása) - ott a natív AndroidBackup hidat használjuk,
+     ami a rendszer "Mentés másként" ablakán keresztül tényleg fájlba írja.
+     Böngészőben/telepített webes verzióban window.AndroidBackup nincs jelen, ott
+     marad a lenti, eddig is működő blob-alapú letöltés. */
+  if(typeof window.AndroidBackup!=='undefined' && window.AndroidBackup){
+    try{ window.AndroidBackup.exportJson(json, filename); return; }
+    catch(e){ toast('Hiba az exportálás natív indításakor.'); return; }
+  }
+  const blob=new Blob([json],{type:'application/json'});
   const url=URL.createObjectURL(blob), a=document.createElement('a');
-  a.href=url; a.download='motivapp-mentes-'+todayISO()+'.json'; a.click(); URL.revokeObjectURL(url);
+  a.href=url; a.download=filename; a.click(); URL.revokeObjectURL(url);
 }
 /* applyImportedJson: a betöltött fájl szövegéből a jelenlegi App.state-et
    építi fel (parse + a defaultState()-re épülő merge + a régi/hiányzó
@@ -3601,6 +3656,7 @@ function applyImportedJson(text){
   }
   if(!next.skills || typeof next.skills !== 'object') next.skills = {};
   if(!next.aiPerm || typeof next.aiPerm !== 'object') next.aiPerm = d.aiPerm;
+  if(!next.healthConnect || typeof next.healthConnect !== 'object') next.healthConnect = d.healthConnect;
   if(!next.nutrition || typeof next.nutrition !== 'object'){
     next.nutrition = d.nutrition;
   } else {
@@ -3770,11 +3826,163 @@ function confirmReset(){
 }
 function resetAllData(){ App.state=defaultState(); saveState(); closeSheet(); toast('Törölve'); renderApp(); }
 
+/* ================= Health Connect natív híd (window.AndroidHealth) =================
+   A natív Android WebView app (MainWebViewActivity.kt) betölti a window.AndroidHealth
+   objektumot a WebView-ba, ha a lap natív alkalmazásban fut. Böngészőben / telepített
+   webes (TWA) verzióban window.AndroidHealth marad undefined – ez a normális, elvárt
+   eset, mindenhol ellenőrizve van, nem dob kivételt.
+   Interfész-szerződés (a natív oldal, HealthConnectBridge.kt, ehhez illeszkedik, NE
+   változtasd egyoldalúan):
+     window.AndroidHealth.isAvailable()        -> SZINKRON boolean (van-e Health Connect a készüléken)
+     window.AndroidHealth.requestPermissions() -> ASZINKRON, eredmény window.onAndroidHealthResult-on jön
+     window.AndroidHealth.syncToday()          -> ASZINKRON, eredmény window.onAndroidHealthResult-on jön
+     window.AndroidHealth.getPendingBackgroundResult() -> SZINKRON, a natív WorkManager-worker
+       (HealthSyncWorker) által háttérben már lekért, még fel nem dolgozott eredmény JSON
+       stringje, vagy null/üres string, ha nincs ilyen
+   A natív oldal MINDIG window.onAndroidHealthResult(payload) hívásával válaszol:
+     {type:'availability'|'permissions'|'data'|'error', available, granted, message,
+      steps, sleepH, pulse, distanceKm, floorsClimbed, caloriesBurned, exerciseMin, weightKg}
+   Minden mező opcionális – ha egy adattípusra nincs engedély, vagy a natív oldal nem
+   tudta lekérni, egyszerűen hiányzik a payloadból.
+   A lépés/alvás/pulzus/táv/szint/kalória/edzésidő UGYANABBA az App.state.healthLog
+   bejegyzésbe kerül, amit a kézi quickLogSheet/saveQuickLog is használ (ld. ~1050. sor
+   körül), így a "Ma" nézet Gyors napló kártyái pontosan úgy jelenítik meg őket, mintha
+   kézzel írták volna be. A testsúly (weightKg) ehelyett a meglévő App.state.weightLog-ba
+   kerül (ugyanaz a {date,kg} alak, mint a kézi testsúly-rögzítésnél). A kézi bevitel
+   emiatt teljesen érintetlen és önmagában (natív híd/Health Connect nélkül, böngészőben
+   is) működőképes marad. */
+function androidHealthAvailable(){
+  return typeof window!=='undefined' && typeof window.AndroidHealth!=='undefined' && !!window.AndroidHealth;
+}
+function syncHealthConnect(){
+  if(!androidHealthAvailable()){
+    toast('Ez a funkció csak a natív alkalmazásban érhető el.');
+    return;
+  }
+  let available = false;
+  try{ available = !!window.AndroidHealth.isAvailable(); }
+  catch(e){ toast('Hiba a Health Connect elérhetőségének ellenőrzésekor.'); return; }
+  if(!available){
+    toast('Nincs telepítve Health Connect ezen a készüléken.');
+    return;
+  }
+  try{ window.AndroidHealth.requestPermissions(); }
+  catch(e){ toast('Hiba a Health Connect engedélykérés indításakor.'); }
+}
+/* A natív oldal ezt hívja meg globálisan, a fenti három AndroidHealth-hívás
+   eredményeként. Böngészőben ezt soha senki nem hívja meg, de a függvénynek
+   attól még biztonságosan léteznie kell (nem szabad kivételt dobnia semmilyen
+   hiányzó/hibás payload mezőnél). */
+window.onAndroidHealthResult = function(payload){
+  try{
+    payload = payload || {};
+    switch(payload.type){
+      case 'data': {
+        const iso = todayISO();
+        let entry = App.state.healthLog.find(h=>h.date===iso);
+        if(!entry){ entry={date:iso}; App.state.healthLog.push(entry); }
+        const parts = [];
+        if(payload.steps!=null && !isNaN(payload.steps)){ entry.steps = payload.steps; parts.push(payload.steps+' lépés'); }
+        if(payload.sleepH!=null && !isNaN(payload.sleepH)){ entry.sleepH = payload.sleepH; parts.push(payload.sleepH+' óra alvás'); }
+        if(payload.pulse!=null && !isNaN(payload.pulse)){ entry.pulse = payload.pulse; parts.push(payload.pulse+' bpm pulzus'); }
+        if(payload.distanceKm!=null && !isNaN(payload.distanceKm)){ entry.distanceKm = payload.distanceKm; parts.push(payload.distanceKm.toFixed(1)+' km'); }
+        if(payload.floorsClimbed!=null && !isNaN(payload.floorsClimbed)){ entry.floorsClimbed = payload.floorsClimbed; parts.push(payload.floorsClimbed+' szint'); }
+        if(payload.caloriesBurned!=null && !isNaN(payload.caloriesBurned)){ entry.caloriesBurned = Math.round(payload.caloriesBurned); parts.push(Math.round(payload.caloriesBurned)+' kcal elégetve'); }
+        if(payload.exerciseMin!=null && !isNaN(payload.exerciseMin)){ entry.exerciseMin = payload.exerciseMin; parts.push(payload.exerciseMin+' perc edzés'); }
+        // A testsúly nem a healthLog-ba, hanem a meglévő weightLog-ba kerül – ugyanaz
+        // a {date,kg} alak, mint amit a kézi "Testsúly rögzítése" funkció ír. Ha aznapra
+        // már van bejegyzés (pl. kézzel is beírták), azt frissítjük, nem duplikáljuk.
+        if(payload.weightKg!=null && !isNaN(payload.weightKg)){
+          let w = App.state.weightLog.find(x=>x.date===iso);
+          if(w){ w.kg = payload.weightKg; } else { App.state.weightLog.push({date:iso,kg:payload.weightKg}); }
+          parts.push(payload.weightKg.toFixed(1)+' kg');
+        }
+        App.state.healthConnect.lastSyncAt = Date.now();
+        saveState();
+        if(typeof renderApp==='function') renderApp();
+        toast(parts.length ? ('Health Connect adatok szinkronizálva: '+parts.join(', ')) : 'Health Connect szinkron megtörtént, de nem érkezett adat.');
+        break;
+      }
+      case 'permissions':
+        App.state.healthConnect.granted = !!payload.granted;
+        saveState();
+        if(payload.granted){
+          try{ androidHealthAvailable() && window.AndroidHealth.syncToday(); }
+          catch(e){ toast('Hiba a Health Connect szinkron indításakor.'); }
+        } else {
+          toast('A Health Connect hozzáférés nincs engedélyezve.');
+        }
+        break;
+      case 'availability':
+        if(payload.available===false){ toast('Nincs telepítve Health Connect ezen a készüléken.'); }
+        break;
+      case 'error':
+        toast((payload.message && typeof payload.message==='string') ? ('Health Connect hiba: '+payload.message) : 'Hiba történt a Health Connect szinkron közben.');
+        break;
+      default:
+        // Ismeretlen/hiányzó type – csendben figyelmen kívül hagyjuk, nem dobunk kivételt.
+        break;
+    }
+  }catch(e){
+    console.warn('onAndroidHealthResult feldolgozási hiba', e);
+  }
+};
+
+/* ===== Health Connect automatikus időszakos szinkron (előtérben) =====
+   Korábban a lépés/alvás/pulzus adat KIZÁRÓLAG kézi gombnyomásra ("Szinkronizálás
+   Health Connect-ből") frissült volna. Az alábbi kód ezt egészíti ki egy csendes,
+   automatikus lekérdezéssel – DE csak akkor, ha a felhasználó korábban már egyszer
+   kézzel megadta az engedélyt (App.state.healthConnect.granted). Enélkül az
+   automatikus hívás soha nem dob fel saját magától rendszer-engedélykérő ablakot – az
+   mindig csak explicit felhasználói művelet (a fenti gomb) hatására jelenik meg.
+   Ez a WebView csak előtérben fut ilyen gyakran; a natív WorkManager-worker
+   (HealthSyncWorker, 15 percenként) egészíti ki ezt háttérben/becsukott app mellett. */
+const HEALTH_AUTO_SYNC_INTERVAL_MS = 5*60*1000; // 5 percenként, amíg az app előtérben fut
+const HEALTH_AUTO_SYNC_MIN_GAP_MS = 60*1000; // ennél sűrűbben (pl. gyors visibilitychange-váltásoknál) nem szinkronizálunk újra
+let _healthAutoSyncTimer = null;
+function autoSyncHealthConnect(){
+  if(!androidHealthAvailable() || !App.state || !App.state.healthConnect || !App.state.healthConnect.granted) return;
+  const last = App.state.healthConnect.lastSyncAt || 0;
+  if(Date.now() - last < HEALTH_AUTO_SYNC_MIN_GAP_MS) return;
+  try{ window.AndroidHealth.syncToday(); }
+  catch(e){ /* csendben elnyeljük – automata próbálkozásnál nem akarunk hibaüzenettel zavarni, a következő időzített körben úgyis újrapróbálja */ }
+}
+function startHealthAutoSync(){
+  if(_healthAutoSyncTimer) return;
+  // Rövid késleltetés induláskor, hogy a WebView/natív híd (window.AndroidHealth)
+  // biztosan betöltődjön, mielőtt az első automata szinkront megpróbálnánk.
+  setTimeout(autoSyncHealthConnect, 3000);
+  _healthAutoSyncTimer = setInterval(autoSyncHealthConnect, HEALTH_AUTO_SYNC_INTERVAL_MS);
+}
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='visible') autoSyncHealthConnect();
+});
+/* A window.AndroidHealth.getPendingBackgroundResult() a natív WorkManager-worker
+   (HealthSyncWorker) által, teljesen a WebView-tól/az app megnyitásától függetlenül,
+   háttérben lekért, még fel nem dolgozott legutóbbi eredményt adja vissza JSON
+   stringként (vagy null/üres stringet, ha nincs ilyen). A meglévő onAndroidHealthResult
+   feldolgozóba küldjük, hogy a becsukott app közben natívan gyűjtött lépés/alvás/pulzus
+   adat is megjelenjen, amint legközelebb megnyitod az appot – enélkül a natív
+   háttér-worker eredménye elveszne. Szándékosan az init() -ből (App.state betöltése
+   UTÁN) hívjuk, nem itt közvetlenül a szkript tetején – a natív oldal MINDIG szinkron
+   window.onAndroidHealthResult()-tal válaszol, ami App.state-et olvas/ír, tehát ennek
+   előbb be kell töltődnie. */
+function pullPendingBackgroundHealthResult(){
+  if(!androidHealthAvailable()) return;
+  try{
+    const pending = window.AndroidHealth.getPendingBackgroundResult();
+    if(pending){ window.onAndroidHealthResult(JSON.parse(pending)); }
+  }catch(e){ console.warn('pullPendingBackgroundHealthResult hiba', e); }
+}
+
 RENDERERS.integrations = function(){
   document.getElementById('view-integrations').innerHTML = subHeader('Integrációk') + `
     <div class="card">
-      <div class="integ-row"><span class="ic">❤️</span><div><div class="t">Samsung Health / Health Connect</div><div class="d">Ez az Android rendszerszintű Health Connect API-ja, amely kizárólag natív alkalmazásból érhető el – böngészőből/webes JS-ből nincs és nem is lehet hozzá hozzáférés. Ez nem fejlesztés-ütemezés kérdése, hanem elvi/technikai platform-korlát: natív alkalmazás nélkül ez webes környezetben soha nem valósítható meg.</div></div><span class="pill pill-muted">Natív app szükséges</span></div>
-      <div class="integ-row"><span class="ic">📍</span><div><div class="t">Háttér GPS-követés</div><div class="d">A kijelző ébren tartása AKTÍV túrakövetés közben – amíg az app nyitva és előtérben van – már működik (Wake Lock API). Valódi háttérkövetés kikapcsolt kijelzővel vagy bezárt appal viszont NEM lehetséges böngészőből: ilyenkor a JS futása felfüggesztődik. Ehhez natív Android location foreground service kellene.</div></div><span class="pill pill-blue">Részleges</span></div>
+      <div class="integ-row"><span class="ic">❤️</span><div><div class="t">Samsung Health / Health Connect</div><div class="d">Ez az Android rendszerszintű Health Connect API-ja, amely kizárólag natív alkalmazásból érhető el – böngészőből/webes JS-ből nincs és nem is lehet hozzá hozzáférés.
+        <div class="small" style="margin-top:8px;" id="health-status-line">${androidHealthAvailable()? 'Natív alkalmazás észlelve – a gombbal szinkronizálhatod a mai adatokat.' : 'Ez a böngésző/telepített webes verzió — itt csak a kézi napló (Ma nézet, Gyors napló) érhető el, a natív appban automatikus is a szinkron.'}</div>
+        <button class="btn btn-ghost btn-sm" style="margin-top:6px;" onclick="syncHealthConnect()">🔄 Szinkronizálás Health Connect-ből</button>
+      </div></div><span class="pill ${androidHealthAvailable()?'pill-green':'pill-muted'}">${androidHealthAvailable()?'Elérhető (natív)':'Natív app szükséges'}</span></div>
+      <div class="integ-row"><span class="ic">📍</span><div><div class="t">Háttér GPS-követés</div><div class="d">${(typeof window.AndroidTracking!=='undefined' && window.AndroidTracking) ? 'Natív alkalmazás – zárolt kijelzőnél vagy háttérbe küldve is folytatódik a rögzítés (értesítés jelzi, amíg fut).' : 'A kijelző ébren tartása AKTÍV túrakövetés közben – amíg az app nyitva és előtérben van – már működik (Wake Lock API). Valódi háttérkövetés kikapcsolt kijelzővel vagy bezárt appal viszont NEM lehetséges böngészőből: ilyenkor a JS futása felfüggesztődik. Ehhez natív Android location foreground service kellene.'}</div></div><span class="pill ${(typeof window.AndroidTracking!=='undefined' && window.AndroidTracking)?'pill-green':'pill-blue'}">${(typeof window.AndroidTracking!=='undefined' && window.AndroidTracking)?'Elérhető (natív)':'Részleges'}</span></div>
       <div class="integ-row"><span class="ic">🔔</span><div><div class="t">Rendszerszintű értesítések</div><div class="d">Böngésző Notification API-alapú emlékeztető már működik a mai feladatokra/eseményekre, de csak amíg ez a lap nyitva van a böngésződben – nem zárolt telefonos push-értesítés. Zárolt telefonon vagy bezárt appnál nem érkezik értesítés; ehhez szerver + Push API + Service Worker + telepített PWA kellene, ami jelenleg nincs.
         <div class="small" style="margin-top:8px;" id="notif-status-line">${notificationsSupported()? notificationStatusText() : 'A böngésződ nem támogatja az értesítéseket.'}</div>
         ${notificationsSupported() && Notification.permission!=='granted' ? `<button class="btn btn-ghost btn-sm" style="margin-top:6px;" onclick="enableBrowserNotifications()">Bekapcsolom (böngészőben)</button>` : ''}
@@ -4296,6 +4504,11 @@ window.runRegressionChecks = runRegressionChecks;
   await loadState();
   renderApp();
   if(typeof promptResumeTrackDraft==='function') promptResumeTrackDraft();
+  // App.state betöltése UTÁN hívjuk (nem a szkript tetején, mint a natív híd
+  // eredetileg dokumentálja) - onAndroidHealthResult App.state-et olvas/ír, tehát
+  // ennek előbb be kell töltődnie, különben az első natív háttér-eredmény elveszne.
+  if(typeof pullPendingBackgroundHealthResult==='function') pullPendingBackgroundHealthResult();
+  if(typeof startHealthAutoSync==='function') startHealthAutoSync();
 })();
 
 /* PWA / offline: a service worker cache-eli az app-shellt (ez a fájl +

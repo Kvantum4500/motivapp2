@@ -62,7 +62,9 @@ android {
     namespace "com.kvantum.motivapp2"
     defaultConfig {
         applicationId "com.kvantum.motivapp2"
-        minSdkVersion 21
+        // 26 (was 21): required by Health Connect / WorkManager (androidx.health.connect
+        // and androidx.work below) - matches the reference project's own minSdk 26.
+        minSdkVersion 26
         targetSdkVersion 36
         versionCode 1
         versionName "1.0.0"
@@ -227,4 +229,19 @@ dependencies {
     // using Android Keystore directly, but they still work and this is what's specified
     // for this feature, so we pin the last stable release rather than an alpha.
     implementation 'androidx.security:security-crypto:1.1.0'
+
+    // Health Connect - backs HealthConnectBridge/HealthDataFetcher/HealthSyncWorker
+    // (window.AndroidHealth). 1.1.0-alpha07 pinned to match the reference project this
+    // was ported from; there is no stable release of this artifact yet.
+    implementation 'androidx.health.connect:connect-client:1.1.0-alpha07'
+
+    // WorkManager - backs HealthSyncScheduler/HealthSyncWorker's periodic (15-minute)
+    // native background Health Connect sync, independent of the WebView/app being open.
+    implementation 'androidx.work:work-runtime-ktx:2.9.1'
+
+    // Provides androidx.activity.ComponentActivity / registerForActivityResult, used by
+    // MainWebViewActivity (geolocation/file-chooser/notification permission flows) and
+    // by HealthConnectBridge/BackupBridge/TrackingBridge's own permission and
+    // document-picker flows.
+    implementation 'androidx.activity:activity-ktx:1.9.2'
 }
