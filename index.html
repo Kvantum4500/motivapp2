@@ -427,6 +427,7 @@ function defaultState(){
       foodOrders:[], // {id,amount,rawText,date,appliedToDiscretionaryId} - banki/Foodora értesítésből rögzített ételrendelések
     },
     journeys:[],
+    journal:[], // {id,date,mood(1-5),text} - hangulatnapló bejegyzések
     aiChat:[],
     aiPerm:{auto:true,confirmCalendar:true,confirmPlan:true},
     settingsMeta:{createdAt:Date.now()},
@@ -469,7 +470,7 @@ async function loadState(){
       }
       /* Régi/hiányzó tömbök biztonságos pótlása */
       const d = defaultState();
-      for(const k of ['tasks','events','workouts','weightLog','healthLog','journeys','aiChat']){
+      for(const k of ['tasks','events','workouts','weightLog','healthLog','journeys','journal','aiChat']){
         if(!Array.isArray(App.state[k])) App.state[k] = d[k];
       }
       if(!Array.isArray(App.state.finance.foodOrders)) App.state.finance.foodOrders = d.finance.foodOrders;
@@ -3387,7 +3388,7 @@ function applyImportedJson(text){
   if(!Array.isArray(next.finance.discretionary)) next.finance.discretionary = d.finance.discretionary;
   if(!Array.isArray(next.finance.savings)) next.finance.savings = d.finance.savings;
   if(!Array.isArray(next.finance.foodOrders)) next.finance.foodOrders = d.finance.foodOrders;
-  for(const k of ['tasks','events','workouts','weightLog','healthLog','journeys','aiChat']){
+  for(const k of ['tasks','events','workouts','weightLog','healthLog','journeys','journal','aiChat']){
     if(!Array.isArray(next[k])) next[k] = d[k];
   }
   if(!next.skills || typeof next.skills !== 'object') next.skills = {};
