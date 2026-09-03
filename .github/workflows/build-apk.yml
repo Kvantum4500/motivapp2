@@ -5,6 +5,9 @@ name: Build signed TWA APK
 on:
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 env:
   # Must match the values baked into android/twa-manifest.json.
   BUILD_TOOLS_VERSION: "36.1.0"
@@ -95,3 +98,25 @@ jobs:
           name: motivapp2-release-aab
           path: android/app-release-bundle.aab
           if-no-files-found: warn
+
+      # Also publish as a GitHub Release so the signed APK has a stable,
+      # directly downloadable link (workflow-run artifacts require being
+      # logged into the Actions UI and expire after 90 days; a Release
+      # asset doesn't). Each run gets its own tag so re-running doesn't
+      # clobber a previous build's release.
+      - name: Create GitHub Release with the signed APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-build-${{ github.run_number }}
+          name: "MotivApp APK build #${{ github.run_number }}"
+          body: |
+            Automatically built and signed by the "Build signed TWA APK" workflow.
+
+            Signing certificate SHA256 fingerprint (must match an entry in
+            https://kvantum4500.github.io/.well-known/assetlinks.json for
+            the app to open without a browser address bar):
+            see the "Print signing certificate SHA256 fingerprint" step of
+            this run for the exact value.
+          files: |
+            android/app-release-signed.apk
+            android/app-release-bundle.aab
