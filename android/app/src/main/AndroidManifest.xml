@@ -63,7 +63,7 @@
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/appName"
-        
+        android:usesCleartextTraffic="false"
         android:manageSpaceActivity="com.google.androidbrowserhelper.trusted.ManageDataLauncherActivity"
         
         android:supportsRtl="true"
@@ -205,9 +205,16 @@
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE"/>
+                <!-- pathPrefix: kvantum4500.github.io also hosts a second, unrelated app
+                     at a different path (see MainWebViewActivity's shouldOverrideUrlLoading
+                     for the same host-vs-host+path distinction). Without this, an App Link
+                     to that other app's path would open here, in this app's TWA/Custom Tab,
+                     under this app's branding - not a bridge-exposure risk (Custom Tabs use
+                     real Chrome, no addJavascriptInterface), but still the wrong app opening
+                     the wrong content. -->
                 <data android:scheme="https"
                     android:host="@string/hostName"
-                
+                    android:pathPrefix="/motivapp2/"
                 />
             </intent-filter>
 
