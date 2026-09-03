@@ -9,7 +9,7 @@
    követve) — ez kényszeríti ki, hogy a böngésző/TWA letöltse az új
    verziót, és a régi cache-t eldobja.
 */
-const CACHE_NAME = 'motivapp-cache-v2.1.3';
+const CACHE_NAME = 'motivapp-cache-v2.1.4';
 const APP_SHELL = [
   './index.html',
   './motivapp2-2_etezes_penzugy_jovahagyas_vegleges.html',
