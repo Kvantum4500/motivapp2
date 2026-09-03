@@ -3353,6 +3353,69 @@ function runDevSelfTest(){
     toast('Hiba az önteszt futtatásakor');
   });
 }
+/* Napló (hangulatnapló): App.state.journal-ra épülő rövid napi bejegyzés
+   1-5 hangulatértékkel. openJournalComposerSheet()/saveJournalEntry()/
+   deleteJournalEntry() a szerkesztő lapot kezelik; naploSubBodyHtml()/
+   renderNaploSub() a listanézetet adja - ezt a két nevet egy másik ág
+   már a nevük alapján hívja, ezért a nevük nem változtatható. */
+function _journalMoodEmoji(mood){
+  return ({1:'😞',2:'😕',3:'😐',4:'🙂',5:'😄'})[mood] || '📝';
+}
+function openJournalComposerSheet(entryId){
+  const entry = entryId ? App.state.journal.find(e=>e.id===entryId) : null;
+  const chips = [1,2,3,4,5].map(m=>`<div class="chip${entry&&entry.mood===m?' active':''}" data-v="${m}">${_journalMoodEmoji(m)}</div>`).join('');
+  const delBtn = entry ? `<button class="iconbtn" onclick="deleteJournalEntry('${entry.id}')">🗑️</button>` : '';
+  openSheet(`<div class="sheet-head"><div class="sheet-title">${entry?'Bejegyzés szerkesztése':'Új napló bejegyzés'}</div><div class="flex gap8">${delBtn}<button class="iconbtn" onclick="closeSheet()">✕</button></div></div>
+    <div class="field"><label>Hangulat</label>
+      <div class="chiprow" id="jn-mood">${chips}</div>
+    </div>
+    <div class="field"><label>Napló</label><textarea id="jn-text" placeholder="Mi történt ma? Hogy érzed magad?">${entry?escapeHtml(entry.text||''):''}</textarea></div>
+    <button class="btn btn-primary btn-block" onclick="saveJournalEntry(${entry?`'${entry.id}'`:''})">Mentés</button>`);
+  document.querySelectorAll('#jn-mood .chip').forEach(c=>c.addEventListener('click',()=>{
+    document.querySelectorAll('#jn-mood .chip').forEach(x=>x.classList.remove('active')); c.classList.add('active');
+  }));
+}
+function saveJournalEntry(entryId){
+  const activeChip = document.querySelector('#jn-mood .chip.active');
+  const mood = activeChip ? parseInt(activeChip.dataset.v) : null;
+  const text = document.getElementById('jn-text').value.trim();
+  if(!mood && !text){ toast('Adj meg hangulatot vagy szöveget'); return; }
+  if(entryId){
+    const e = App.state.journal.find(x=>x.id===entryId);
+    if(!e){ toast('A bejegyzés nem található'); return; }
+    e.mood = mood; e.text = text;
+  } else {
+    App.state.journal.unshift({id:uid(), date:todayISO(), mood, text});
+  }
+  saveState(); closeSheet(); toast('Mentve'); renderNaploSub();
+}
+function deleteJournalEntry(entryId){
+  App.state.journal = App.state.journal.filter(x=>x.id!==entryId);
+  saveState(); closeSheet(); toast('Bejegyzés törölve'); renderNaploSub();
+}
+function _journalEntryCardHtml(e){
+  const emoji = e.mood ? _journalMoodEmoji(e.mood) : '📝';
+  const preview = e.text ? escapeHtml(e.text).slice(0,140)+(e.text.length>140?'…':'') : '';
+  return `<div class="card tap" onclick="openJournalComposerSheet('${e.id}')">
+    <div class="card-title">${emoji} ${fmtDateHu(e.date)}</div>
+    ${preview?`<div class="small muted" style="margin-top:4px;line-height:1.5;">${preview}</div>`:''}
+  </div>`;
+}
+function _journalListHtml(){
+  const list = App.state.journal;
+  if(!list.length) return `<div class="empty"><div class="ic">📝</div><div class="t">Még nincs bejegyzés</div><div class="d">Írd le, hogy telt a mai napod.</div></div>`;
+  return list.map(_journalEntryCardHtml).join('');
+}
+function naploSubBodyHtml(){
+  return `
+    <div class="sectiontitle">Napló <span class="g small" style="cursor:pointer;" onclick="openJournalComposerSheet()">+ Új bejegyzés</span></div>
+    <div id="naplo-sub-content">${_journalListHtml()}</div>
+  `;
+}
+function renderNaploSub(){
+  const c = document.getElementById('naplo-sub-content'); if(!c) return;
+  c.innerHTML = _journalListHtml();
+}
 function buildExportPayload(){
   /* schemaVersion/exportedAt: csak kiegészítő metaadat, az applyImportedJson()
      alapját adó defaultState()-re épülő betöltés ismeretlen mezőként
