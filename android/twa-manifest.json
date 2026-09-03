@@ -1,0 +1,41 @@
+{
+  "packageId": "com.kvantum.motivapp2",
+  "host": "kvantum4500.github.io",
+  "name": "MotivApp",
+  "launcherName": "MotivApp",
+  "display": "standalone",
+  "orientation": "portrait",
+  "themeColor": "#12181A",
+  "themeColorDark": "#12181A",
+  "navigationColor": "#12181A",
+  "navigationColorDark": "#12181A",
+  "navigationDividerColor": "#12181A",
+  "navigationDividerColorDark": "#12181A",
+  "backgroundColor": "#12181A",
+  "enableNotifications": false,
+  "startUrl": "/motivapp2/index.html",
+  "iconUrl": "https://kvantum4500.github.io/motivapp2/icon-512.png",
+  "maskableIconUrl": "https://kvantum4500.github.io/motivapp2/icon-512-maskable.png",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "./android.keystore",
+    "alias": "android"
+  },
+  "appVersion": "1.0.0",
+  "appVersionCode": 1,
+  "shortcuts": [],
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://kvantum4500.github.io/motivapp2/manifest.json",
+  "fallbackType": "customtabs",
+  "features": {},
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "minSdkVersion": 21,
+  "fingerprints": [],
+  "additionalTrustedOrigins": [],
+  "retainedBundles": []
+}

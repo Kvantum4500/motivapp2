@@ -1,0 +1,97 @@
+name: Build signed TWA APK
+
+# Manual trigger only - this is a slow build (Android SDK download + Gradle) and
+# doesn't need to run on every push.
+on:
+  workflow_dispatch: {}
+
+env:
+  # Must match the values baked into android/twa-manifest.json.
+  BUILD_TOOLS_VERSION: "36.1.0"
+  PLATFORM_VERSION: "android-36"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install required Android SDK packages
+        run: |
+          sdkmanager --install "platform-tools" "platforms;${PLATFORM_VERSION}" "build-tools;${BUILD_TOOLS_VERSION}"
+
+      - name: Install @bubblewrap/cli
+        run: npm install -g @bubblewrap/cli@1.25.0
+
+      - name: Point Bubblewrap at the pre-installed JDK and Android SDK
+        run: |
+          mkdir -p "$HOME/.bubblewrap"
+          cat > "$HOME/.bubblewrap/config.json" <<EOF
+          {"jdkPath":"${JAVA_HOME}","androidSdkPath":"${ANDROID_HOME}"}
+          EOF
+
+      - name: Decode signing keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 secret is not set. Add the four ANDROID_* secrets to this repo (Settings -> Secrets and variables -> Actions) before running this workflow." >&2
+            exit 1
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android.keystore
+
+      - name: Print signing certificate SHA256 fingerprint
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          echo "== Fingerprint of the key this build will sign with =="
+          keytool -list -v -keystore android.keystore -storepass "$ANDROID_KEYSTORE_PASSWORD" | grep -i "SHA256:"
+          echo "Compare this against the sha256_cert_fingerprints entries in"
+          echo "https://kvantum4500.github.io/.well-known/assetlinks.json"
+
+      # Scaffolds the Android Studio / Gradle project from twa-manifest.json.
+      # --skipVersionUpgrade avoids an interactive "enter a new app version" prompt.
+      # Running this first also writes manifest-checksum.txt, so the subsequent
+      # `bubblewrap build` sees an up-to-date checksum and skips its own
+      # "update the project?" confirmation prompt - the whole pipeline runs
+      # non-interactively end to end.
+      - name: bubblewrap update (scaffold Android project)
+        run: bubblewrap update --skipVersionUpgrade
+
+      - name: bubblewrap build (compile + sign APK and AAB)
+        env:
+          BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          bubblewrap build \
+            --signingKeyAlias "${{ secrets.ANDROID_KEY_ALIAS }}"
+
+      - name: List build outputs
+        run: ls -la
+
+      - name: Upload signed APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: motivapp2-release-apk
+          path: android/app-release-signed.apk
+          if-no-files-found: error
+
+      - name: Upload signed AAB (Play Store bundle)
+        uses: actions/upload-artifact@v4
+        with:
+          name: motivapp2-release-aab
+          path: android/app-release-bundle.aab
+          if-no-files-found: warn
