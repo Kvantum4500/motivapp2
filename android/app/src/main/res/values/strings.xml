@@ -38,5 +38,21 @@
         }
     }]
     
-  </string>  
+  </string>
+
+  <!-- JourneyMapActivity (window.AndroidMaps.openJourneyMap) UI szövegei. Ezt a fájlt
+       eddig csak a bubblewrap-generátor írta (asset_statements) - ez az első kézzel
+       hozzáadott string-csoport benne, ld. JourneyMapActivity.kt. -->
+  <string name="journeyMapNoJourney">Nincs megjeleníthető túra.</string>
+  <string name="journeyMapLockedTitle">Havi térkép-keret elfogyott</string>
+  <string name="journeyMapLockedMessageFormat">Ebben a hónapban elhasználtad a beállított térkép-betöltési kereted (%1$d/%2$d betöltés). Ha tovább szeretnéd használni, engedélyezheted a hónap hátralévő részére.</string>
+  <string name="journeyMapUnlockButton">Engedélyezem tovább ebben a hónapban</string>
+  <string name="journeyMapUnlockConfirmMessage">Biztosan tovább engeded ebben a hónapban? Ez a lezárás automatikusan visszaáll a következő hónap elején.</string>
+  <string name="journeyMapUnlockConfirmYes">Igen, engedélyezem</string>
+  <string name="journeyMapUnlockConfirmNo">Mégse</string>
+  <string name="journeyMapBudgetDialogTitle">Havi térkép-keret</string>
+  <string name="journeyMapBudgetSave">Mentés</string>
+  <string name="journeyMapBudgetCancel">Mégse</string>
+  <string name="journeyMapClose">Bezárás</string>
+  <string name="journeyMapSettings">Beállítások</string>
 </resources>

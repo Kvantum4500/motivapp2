@@ -27,6 +27,20 @@ plugins {
     id 'org.jetbrains.kotlin.android' version '2.0.21'
 }
 
+// Google Maps API key for the native journey-map screen (JourneyMapActivity /
+// window.AndroidTracking.openJourneyMap) - never hardcoded in source. Resolved from,
+// in order: a local `local.properties` MAPS_API_KEY=... line (gitignored, for
+// developer machines), or the MAPS_API_KEY environment variable (set from the
+// MAPS_API_KEY GitHub Actions secret in build-apk.yml). Defaults to an empty string
+// so the project still compiles with no key configured - the map screen just shows
+// its "not configured" state instead of tiles until a real key is added.
+def localProps = new Properties()
+def localPropsFile = rootProject.file('local.properties')
+if (localPropsFile.exists()) {
+    localPropsFile.withInputStream { localProps.load(it) }
+}
+def mapsApiKey = localProps.getProperty('MAPS_API_KEY') ?: (System.getenv('MAPS_API_KEY') ?: '')
+
 def twaManifest = [
     applicationId: 'com.kvantum.motivapp2',
     hostName: 'kvantum4500.github.io', // The domain being opened in the TWA.
@@ -78,6 +92,10 @@ android {
         // The URL that will be used when launching the TWA from the Android Launcher
         def launchUrl = "https://" + twaManifest.hostName + twaManifest.launchUrl
         resValue "string", "launchUrl", launchUrl
+
+        // See mapsApiKey resolution above - consumed by the
+        // com.google.android.geo.API_KEY meta-data in AndroidManifest.xml.
+        resValue "string", "mapsApiKey", mapsApiKey
 
         
 
@@ -244,4 +262,21 @@ dependencies {
     // by HealthConnectBridge/BackupBridge/TrackingBridge's own permission and
     // document-picker flows.
     implementation 'androidx.activity:activity-ktx:1.9.2'
+
+    // Maps SDK for Android - backs JourneyMapActivity (window.AndroidTracking.
+    // openJourneyMap), a native map screen showing a recorded hike's polyline over
+    // real map tiles, gated by MapsUsageStore's self-tracked monthly load budget.
+    // Needs a com.google.android.geo.API_KEY meta-data value at runtime (see
+    // mapsApiKey above) - compiles and installs fine without one, the screen just
+    // can't render tiles until a real key is configured.
+    implementation 'com.google.android.gms:play-services-maps:19.0.0'
+
+    // AndroidX Fragment - play-services-maps does NOT bundle it, but JourneyMapActivity
+    // hosts a SupportMapFragment (com.google.android.gms.maps.SupportMapFragment), which
+    // needs androidx.fragment.app.FragmentManager to attach. Pulled in via
+    // androidx.fragment.app.FragmentActivity, which JourneyMapActivity extends instead of
+    // plain ComponentActivity for this one screen - see the base-class comment at the top
+    // of JourneyMapActivity.kt for why that's still safe with this app's raw platform
+    // theme (unlike AppCompatActivity, which is NOT used here).
+    implementation 'androidx.fragment:fragment-ktx:1.8.4'
 }

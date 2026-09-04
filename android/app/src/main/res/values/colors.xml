@@ -15,4 +15,17 @@
 -->
 <resources>
     <color name="shortcut_background">#F5F5F5</color>
+
+    <!-- JourneyMapActivity paletta - a webes app (index.html) CSS változóival hangolva
+         (nem pixel-pontos átvétel, csak vizuálisan összhangban a meglévő meleg/földes
+         színvilággal: ink, surface, trail-yellow, paper, trail-green, trail-red, muted
+         CSS változók index.html), hogy a natív térkép-képernyő ne üssön el a webes UI-tól. -->
+    <color name="journeyMapInk">#12181A</color>
+    <color name="journeyMapSurface">#1C2521</color>
+    <color name="journeyMapSurface2">#242F29</color>
+    <color name="journeyMapGold">#D9A441</color>
+    <color name="journeyMapPaper">#EDE9DD</color>
+    <color name="journeyMapMuted">#93A79A</color>
+    <color name="journeyMapGreen">#5C8F62</color>
+    <color name="journeyMapRed">#C1432B</color>
 </resources>

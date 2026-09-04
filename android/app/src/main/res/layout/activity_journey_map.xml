@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- JourneyMapActivity (window.AndroidMaps.openJourneyMap) natív térkép-képernyője.
+     Egyszerű, kézzel írt XML (a projektben nincs Compose-beállítás), ugyanaz a minta,
+     mint a többi natív-UI elemnél (ld. NativeBridge.kt/TrackingForegroundService.kt
+     kommentjei) - ez az első hand-written layout XML ebben a modulban, a WebView-alapú
+     MainWebViewActivity mellett. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/journeyMapInk">
+
+    <!-- A SupportMapFragment ide kerül programozottan (JourneyMapActivity.kt), csak
+         akkor, ha a havi keret NINCS lezárva - lezárt állapotban ez a konténer üres
+         marad, egyetlen térkép-betöltés/csempekérés sem történik. -->
+    <FrameLayout
+        android:id="@+id/map_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Lezárt (havi keret elfogyott) állapot - teljes képernyős, a térkép helyett. -->
+    <LinearLayout
+        android:id="@+id/locked_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/journeyMapInk"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="32dp"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🔒"
+            android:textSize="48sp"
+            android:layout_marginBottom="16dp" />
+
+        <TextView
+            android:id="@+id/locked_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/journeyMapLockedTitle"
+            android:textColor="@color/journeyMapPaper"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/locked_message"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@color/journeyMapMuted"
+            android:textSize="14sp"
+            android:gravity="center"
+            android:layout_marginBottom="24dp" />
+
+        <Button
+            android:id="@+id/unlock_button"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/journeyMapUnlockButton"
+            android:backgroundTint="@color/journeyMapGold"
+            android:textColor="@color/journeyMapInk"
+            android:layout_marginBottom="12dp" />
+
+        <Button
+            android:id="@+id/locked_close_button"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/journeyMapClose"
+            android:background="@android:color/transparent"
+            android:textColor="@color/journeyMapMuted" />
+
+    </LinearLayout>
+
+    <!-- Perzisztens felül-átfedés (nem lezárt állapotban): túra neve + havi
+         betöltés-keret sáv + beállítás/bezárás gombok. A térkép fölött, a
+         FrameLayout z-rendje miatt (a XML-ben később szereplő nézet kerül felülre). -->
+    <LinearLayout
+        android:id="@+id/top_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:orientation="vertical"
+        android:background="#CC12181A"
+        android:padding="12dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/journey_name_text"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="@color/journeyMapPaper"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:maxLines="1"
+                android:ellipsize="end" />
+
+            <ImageButton
+                android:id="@+id/settings_button"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="@android:color/transparent"
+                android:src="@android:drawable/ic_menu_preferences"
+                android:contentDescription="@string/journeyMapSettings" />
+
+            <ImageButton
+                android:id="@+id/close_button"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="@android:color/transparent"
+                android:src="@android:drawable/ic_menu_close_clear_cancel"
+                android:contentDescription="@string/journeyMapClose" />
+
+        </LinearLayout>
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="8dp"
+            android:layout_marginTop="8dp"
+            android:background="@color/journeyMapSurface2">
+
+            <View
+                android:id="@+id/usage_bar_fill"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:background="@color/journeyMapGold" />
+
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/usage_pct_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="@color/journeyMapMuted"
+            android:textSize="12sp" />
+
+    </LinearLayout>
+
+</FrameLayout>

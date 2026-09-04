@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.1.7';
+const APP_VERSION = '2.1.8';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.1.7';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.1.8';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -2383,6 +2383,7 @@ function renderJourneysView(c){
         <span style="font-size:18px;">🥾</span>
         <div class="row-main"><div class="row-title" style="font-size:14px;">${escapeHtml(j.name)}</div>
         <div class="row-sub">${fmtDateHu(j.date)} · ${(j.distanceKm||0).toFixed(1)} km · ${fmtDuration(j.durationMin)}</div></div>
+        ${androidMapsAvailable() ? `<button class="iconbtn" data-click="openJourneyNativeMap" data-id="${escapeHtml(j.id)}" title="Natív térkép" onclick="event.stopPropagation();">🗺️</button>` : ''}
         <span class="g" onclick="event.stopPropagation();deleteJourney('${j.id}')">🗑️</span>
       </div>`).join('') : `<div class="empty"><div class="ic">🥾</div><div class="t">Még nincs mentett túra</div><div class="d">Indíts egy követést a TRACK fülön.</div></div>`}
   </div>`;
@@ -4354,6 +4355,22 @@ const RPG_STATUS_COLOR = {warning:'var(--trail-red)', success:'var(--trail-green
    / TWA-ban window.AndroidNotify mindig undefined marad, ez a normális eset. */
 function androidNotifyAvailable(){
   return typeof window!=='undefined' && typeof window.AndroidNotify!=='undefined' && !!window.AndroidNotify;
+}
+
+/* ---- Natív térkép-híd (window.AndroidMaps, ld. MapsBridge.kt) ----
+   Ugyanaz a feature-detect minta, mint androidHealthAvailable()/androidNotifyAvailable().
+   Böngészőben / TWA-ban window.AndroidMaps mindig undefined marad — ilyenkor a Túrák
+   listában a natív-térkép gomb egyszerűen nem jelenik meg (nem letiltott állapotban
+   mutatjuk, hanem el sem rendereljük), és a meglévő SVG-alapú renderRouteSvg() marad az
+   egyetlen (mindig, hálózat nélkül is működő) útvonalnézet. */
+function androidMapsAvailable(){
+  return typeof window!=='undefined' && typeof window.AndroidMaps!=='undefined' && !!window.AndroidMaps;
+}
+function openJourneyNativeMap(id){
+  const j = App.state.journeys.find(x=>x.id===id);
+  if(!j) return;
+  try{ window.AndroidMaps.openJourneyMap(JSON.stringify(j.points||[]), j.name||'Túra'); }
+  catch(e){ toast('Nem sikerült megnyitni a natív térképet.'); }
 }
 
 /* ---- Segédfüggvények ---- */

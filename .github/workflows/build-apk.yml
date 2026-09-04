@@ -77,6 +77,11 @@ jobs:
         env:
           BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          # Read by app/build.gradle's mapsApiKey resolution (JourneyMapActivity's
+          # com.google.android.geo.API_KEY). Optional: if this secret isn't set yet,
+          # the env var is empty and the build still succeeds - the native map screen
+          # just can't render tiles until a real key is added to the repo's secrets.
+          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
         run: |
           bubblewrap build \
             --signingKeyAlias "${{ secrets.ANDROID_KEY_ALIAS }}"

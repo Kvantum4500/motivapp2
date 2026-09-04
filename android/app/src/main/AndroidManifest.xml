@@ -83,6 +83,15 @@
             android:name="twa_generator"
             android:value="@string/generatorApp" />
 
+        <!-- Maps SDK for Android - backs JourneyMapActivity below. See mapsApiKey
+             resolution in app/build.gradle: empty by default (compiles and installs
+             fine, the map screen just can't render tiles) until a real
+             MAPS_API_KEY is configured (local.properties locally, a MAPS_API_KEY
+             GitHub Actions secret in CI). -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="@string/mapsApiKey" />
+
         
 
         
@@ -122,6 +131,16 @@
                 <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
             </intent-filter>
         </activity>
+
+        <!-- Native journey map screen (window.AndroidTracking.openJourneyMap), showing a
+             recorded hike's route over real Google Maps tiles - see MapsBridge.kt /
+             JourneyMapActivity.kt / MapsUsageStore.kt. Not exported: only ever launched
+             from within the app itself (MainWebViewActivity's own bridge call), never a
+             valid external entry point. -->
+        <activity android:name=".JourneyMapActivity"
+            android:label="@string/appName"
+            android:exported="false"
+            android:configChanges="orientation|screenSize" />
 
         <!-- Health Connect's "Manage data" screen opens the app's permission rationale
              through this alias. -->
