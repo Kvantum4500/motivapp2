@@ -693,6 +693,28 @@ function openSheet(html){
 function closeSheet(){ document.getElementById('sheetbg').classList.remove('open'); }
 document.getElementById('sheetbg').addEventListener('click',e=>{ if(e.target.id==='sheetbg') closeSheet(); });
 document.addEventListener('keydown', e=>{ if(e.key==='Escape' && document.getElementById('sheetbg').classList.contains('open')) closeSheet(); });
+/* Delegated click handler replacing onclick="fn('${x.id}')" at every site that
+   interpolates a stored record's id - a security-review finding: escapeHtml()
+   alone doesn't make that construction safe, because a value containing a
+   quote still terminates the surrounding attribute/JS-string once the browser
+   parses the markup, regardless of HTML-entity-encoding it first (a separate,
+   already-merged fix neutralizes this at every point untrusted data enters
+   App.state, but the onclick-with-interpolated-id PATTERN itself stays
+   fragile - safe only because every id-producing path happens to be covered
+   today). data-id / data-id2 go into the DOM purely as HTML-attribute text
+   (browser-decoded, never re-parsed as markup or JS), so no value they hold
+   can ever break out of the surrounding element regardless of its content -
+   safe by construction, not by validating what's in it. */
+document.addEventListener('click', function(e){
+  const el = e.target.closest('[data-click]');
+  if(!el) return;
+  const fn = window[el.dataset.click];
+  if(typeof fn !== 'function') return;
+  const args = [];
+  if('id' in el.dataset) args.push(el.dataset.id);
+  if('id2' in el.dataset) args.push(el.dataset.id2);
+  fn.apply(null, args);
+});
 function kbActivate(e,fn){ if(e.key==='Enter'||e.key===' '||e.key==='Spacebar'){ e.preventDefault(); fn(); } }
 
 function haversine(a,b){
@@ -932,7 +954,7 @@ function taskRowHtml(t, afterToggle){
         <div class="progwrap" style="margin:7px 0 4px;"><div class="progbar" style="width:${t.progress||0}%"></div></div>
         <div class="small muted">${t.progress||0}% kész</div>
       </div>
-      <span class="g" style="cursor:pointer;padding-top:2px;" onclick="editTaskProgress('${t.id}')">✏️</span>
+      <span class="g" style="cursor:pointer;padding-top:2px;" data-click="editTaskProgress" data-id="${escapeHtml(t.id)}">✏️</span>
     </div>`;
   }
   if(t.type==='steps'){
@@ -940,7 +962,7 @@ function taskRowHtml(t, afterToggle){
     const done = steps.filter(s=>s.done).length;
     const total = steps.length;
     const pct = total? Math.round(done/total*100) : 0;
-    return `<div class="row" style="align-items:flex-start;cursor:pointer;" onclick="openStepsChecklistSheet('${t.id}')">
+    return `<div class="row" style="align-items:flex-start;cursor:pointer;" data-click="openStepsChecklistSheet" data-id="${escapeHtml(t.id)}">
       <div class="row-main">
         <div class="row-title" style="font-size:14px;">${escapeHtml(t.title)}</div>
         <div class="progwrap" style="margin:7px 0 4px;"><div class="progbar" style="width:${pct}%"></div></div>
@@ -950,12 +972,17 @@ function taskRowHtml(t, afterToggle){
     </div>`;
   }
   return `<div class="row">
-    <div class="row-check ${t.done?'done':''}" onclick="toggleTask('${t.id}');${afterToggle||''}">${t.done?'✓':''}</div>
+    <div class="row-check ${t.done?'done':''}" data-click="toggleTaskWithAfter" data-id="${escapeHtml(t.id)}" data-id2="${escapeHtml(afterToggle||'')}">${t.done?'✓':''}</div>
     <div class="row-main"><div class="row-title ${t.done?'done':''}">${escapeHtml(t.title)}</div>
     ${t.priority? `<div class="row-sub">${t.priority==='high'?'🔴 magas prioritás':t.priority==='low'?'⚪ alacsony prioritás':'🟡 közepes prioritás'}</div>`:''}
     </div>
   </div>`;
 }
+function toggleTaskWithAfter(id, afterName){
+  toggleTask(id);
+  if(afterName && typeof window[afterName]==='function') window[afterName]();
+}
+function toggleTaskAndRenderCal(id){ toggleTask(id); renderCalContent(); }
 function editTaskProgress(id){
   const t = App.state.tasks.find(x=>x.id===id); if(!t) return;
   openSheet(`<div class="sheet-head"><div class="sheet-title">${escapeHtml(t.title)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
@@ -1066,7 +1093,7 @@ function saveEditedSteps(){
 function openStepsChecklistSheet(id){
   const t = App.state.tasks.find(x=>x.id===id); if(!t) return;
   openSheet(`
-    <div class="sheet-head"><div class="sheet-title">${escapeHtml(t.title)}</div><div class="flex gap8"><span class="g" style="cursor:pointer;" onclick="openEditStepsSheet('${id}')">✏️</span><button class="iconbtn" onclick="closeSheet()">✕</button></div></div>
+    <div class="sheet-head"><div class="sheet-title">${escapeHtml(t.title)}</div><div class="flex gap8"><span class="g" style="cursor:pointer;" data-click="openEditStepsSheet" data-id="${escapeHtml(id)}">✏️</span><button class="iconbtn" onclick="closeSheet()">✕</button></div></div>
     <div id="steps-checklist-list"></div>
   `);
   renderStepsChecklistList(id);
@@ -1077,7 +1104,7 @@ function renderStepsChecklistList(id){
   const steps = t.steps||[];
   c.innerHTML = steps.length? steps.map(s=>`
     <div class="row">
-      <div class="row-check ${s.done?'done':''}" onclick="toggleStepDone('${id}','${s.id}')">${s.done?'✓':''}</div>
+      <div class="row-check ${s.done?'done':''}" data-click="toggleStepDone" data-id="${escapeHtml(id)}" data-id2="${escapeHtml(s.id)}">${s.done?'✓':''}</div>
       <div class="row-main"><div class="row-title ${s.done?'done':''}">${escapeHtml(s.text)}</div></div>
     </div>`).join('') : `<div class="empty"><div class="ic">📋</div><div class="t">Még nincs lépés</div><div class="d">Add hozzá a fejlécben lévő ✏️ gombbal.</div></div>`;
 }
@@ -1095,7 +1122,7 @@ function _feladatokListHtml(){
   const steps = all.filter(t=>t.type==='steps');
   return `
     <div class="sectiontitle">Feladatok</div>
-    <div class="card" style="padding:4px 16px;">${plain.length? plain.map(t=>taskRowHtml(t,'renderFeladatokSub();')).join('') : `<div class="empty"><div class="ic">📋</div><div class="t">Nincs feladat</div></div>`}</div>
+    <div class="card" style="padding:4px 16px;">${plain.length? plain.map(t=>taskRowHtml(t,'renderFeladatokSub')).join('') : `<div class="empty"><div class="ic">📋</div><div class="t">Nincs feladat</div></div>`}</div>
     <div class="sectiontitle">Lépéssoros feladatok</div>
     <div class="card" style="padding:4px 16px;">${steps.length? steps.map(t=>taskRowHtml(t)).join('') : `<div class="empty"><div class="ic">📋</div><div class="t">Nincs lépéssoros feladat</div></div>`}</div>
   `;
@@ -1180,14 +1207,14 @@ RENDERERS.schedule = function(){
       ${App.state.tasks.length? App.state.tasks.slice().sort((a,b)=>(a.due||'').localeCompare(b.due||'')).map(t=> t.type==='percent'? `
         <div class="row" style="align-items:flex-start;">
           <div class="row-main">
-            <div class="flex between"><div class="row-title" style="font-size:14px;">${escapeHtml(t.title)}</div><span class="g" style="cursor:pointer;" onclick="editTaskProgress('${t.id}')">✏️</span></div>
+            <div class="flex between"><div class="row-title" style="font-size:14px;">${escapeHtml(t.title)}</div><span class="g" style="cursor:pointer;" data-click="editTaskProgress" data-id="${escapeHtml(t.id)}">✏️</span></div>
             <div class="row-sub">${t.due?fmtDateHu(t.due):'nincs határidő'}</div>
             <div class="progwrap" style="margin:6px 0 3px;"><div class="progbar" style="width:${t.progress||0}%"></div></div>
             <div class="small muted">${t.progress||0}% kész</div>
           </div>
         </div>` : `
         <div class="row">
-          <div class="row-check ${t.done?'done':''}" onclick="toggleTask('${t.id}');renderCalContent();">${t.done?'✓':''}</div>
+          <div class="row-check ${t.done?'done':''}" data-click="toggleTaskAndRenderCal" data-id="${escapeHtml(t.id)}">${t.done?'✓':''}</div>
           <div class="row-main"><div class="row-title ${t.done?'done':''}">${escapeHtml(t.title)}</div><div class="row-sub">${t.due?fmtDateHu(t.due):'nincs határidő'}</div></div>
         </div>`).join('') : `<div class="empty"><div class="ic">📋</div><div class="t">Nincs feladat</div></div>`}
     </div>
@@ -1257,7 +1284,7 @@ function renderNapView(c){
     </div>
     <div class="sectiontitle">Feladatok <span class="g small" style="cursor:pointer;" onclick="openAddTaskSheet('${iso}')">+ Új</span></div>
     <div class="card" style="padding:6px 16px;">
-      ${tasksDay.length? tasksDay.map(t=>taskRowHtml(t,'renderCalContent();')).join('') : `<div class="small muted" style="padding:12px 0;">Nincs aznapi feladat.</div>`}
+      ${tasksDay.length? tasksDay.map(t=>taskRowHtml(t,'renderCalContent')).join('') : `<div class="small muted" style="padding:12px 0;">Nincs aznapi feladat.</div>`}
     </div>
     <div class="sectiontitle">Események <span class="g small" style="cursor:pointer;" onclick="openAddEventSheet('${iso}')">+ Új</span></div>
     <div class="card" style="padding:6px 16px;">
@@ -1357,13 +1384,13 @@ function openDaySheet(iso){
           <div class="progwrap" style="margin:6px 0 3px;"><div class="progbar" style="width:${t.progress||0}%"></div></div>
           <div class="small muted">${t.progress||0}% kész</div>
         </div>
-        <span class="g" style="cursor:pointer;" onclick="editTaskProgress('${t.id}')">✏️</span>
-        <span class="g" style="cursor:pointer;margin-left:8px;" onclick="deleteTask('${t.id}','${iso}')">🗑️</span>
+        <span class="g" style="cursor:pointer;" data-click="editTaskProgress" data-id="${escapeHtml(t.id)}">✏️</span>
+        <span class="g" style="cursor:pointer;margin-left:8px;" data-click="deleteTask" data-id="${escapeHtml(t.id)}" data-id2="${escapeHtml(iso)}">🗑️</span>
       </div>` : `
       <div class="row">
-        <div class="row-check ${t.done?'done':''}" onclick="toggleTask('${t.id}');openDaySheet('${iso}');">${t.done?'✓':''}</div>
+        <div class="row-check ${t.done?'done':''}" data-click="toggleTaskAndReopenDaySheet" data-id="${escapeHtml(t.id)}" data-id2="${escapeHtml(iso)}">${t.done?'✓':''}</div>
         <div class="row-main"><div class="row-title ${t.done?'done':''}" style="font-size:13.5px;">${escapeHtml(t.title)}</div></div>
-        <span class="g" style="cursor:pointer;" onclick="deleteTask('${t.id}','${iso}')">🗑️</span>
+        <span class="g" style="cursor:pointer;" data-click="deleteTask" data-id="${escapeHtml(t.id)}" data-id2="${escapeHtml(iso)}">🗑️</span>
       </div>`).join('') : `<div class="small muted" style="padding:10px 0;">Nincs feladat.</div>`}
     <div class="hr"></div>
     <div class="flex between center"><label style="font-size:12.5px;color:var(--muted);font-weight:600;">Események</label>
@@ -1371,10 +1398,11 @@ function openDaySheet(iso){
     ${evs.length? evs.map(e=>`
       <div class="row"><span class="dot dot-${EVENT_COLORS[e.type]}"></span>
         <div class="row-main"><div class="row-title" style="font-size:13.5px;">${escapeHtml(e.title)}</div><div class="row-sub">${e.time||''}</div></div>
-        <span class="g" style="cursor:pointer;" onclick="deleteEvent('${e.id}')">🗑️</span>
+        <span class="g" style="cursor:pointer;" data-click="deleteEvent" data-id="${escapeHtml(e.id)}">🗑️</span>
       </div>`).join('') : `<div class="small muted" style="padding:10px 0;">Nincs esemény.</div>`}
   `);
 }
+function toggleTaskAndReopenDaySheet(id, iso){ toggleTask(id); openDaySheet(iso); }
 function deleteTask(id,iso){
   const idx=App.state.tasks.findIndex(t=>t.id===id);
   if(idx===-1) return;
@@ -1766,7 +1794,7 @@ function renderSkillsView(c){
   const unlockedCount = nodes.filter(n=>n.parent && App.state.skills[n.id]).length;
   c.innerHTML = `
     <div class="chiprow" style="margin-bottom:14px;">
-      ${allSports().map(sp=>`<div class="chip ${sport===sp.id?'active':''}" onclick="setSkillSport('${sp.id}')">${escapeHtml(sp.icon)} ${escapeHtml(sp.name)}</div>`).join('')}
+      ${allSports().map(sp=>`<div class="chip ${sport===sp.id?'active':''}" data-click="setSkillSport" data-id="${escapeHtml(sp.id)}">${escapeHtml(sp.icon)} ${escapeHtml(sp.name)}</div>`).join('')}
       <div class="chip" style="color:var(--trail-yellow);" onclick="openAddSportSheet()">+ Új sport</div>
     </div>
     <div class="card" style="padding:14px 16px;margin-bottom:10px;">
@@ -1798,7 +1826,7 @@ function renderSportTree(nodes){
   let nodesHtml='';
   laid.forEach(n=>{
     const p=pos[n.id], st=skillState(n);
-    nodesHtml += `<div class="treenode ${st}" style="left:${(p.x-TREE_NODEW/2).toFixed(1)}px;top:${p.y}px;width:${TREE_NODEW}px;" onclick="onSkillTap('${n.id}')">
+    nodesHtml += `<div class="treenode ${st}" style="left:${(p.x-TREE_NODEW/2).toFixed(1)}px;top:${p.y}px;width:${TREE_NODEW}px;" data-click="onSkillTap" data-id="${escapeHtml(n.id)}">
       <div class="tn-ic">${escapeHtml(n.icon)}</div>
       <div class="tn-lb">${escapeHtml(n.name)}</div>
     </div>`;
@@ -1820,7 +1848,7 @@ function onSkillTap(id){
     openSheet(`<div class="sheet-head"><div class="sheet-title">${escapeHtml(s.icon)} ${escapeHtml(s.name)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
       <div class="small muted" style="margin-bottom:14px;">Feloldva. Kapcsolódó izomcsoportok: ${(s.muscles||[]).map(m=>(MUSCLE_GROUPS.find(x=>x.id===m)||{}).label).join(', ')||'—'}</div>
       ${dependentsWarning}
-      <button class="btn btn-ghost btn-block" onclick="revokeSkillCascade('${id}')">Visszavonás${dependents.length?` (+${dependents.length} függő)`:''}</button>`);
+      <button class="btn btn-ghost btn-block" data-click="revokeSkillCascade" data-id="${escapeHtml(id)}">Visszavonás${dependents.length?` (+${dependents.length} függő)`:''}</button>`);
     return;
   }
   if(st==='locked'){
@@ -2347,7 +2375,7 @@ function renderMapView(c){
     <div class="card" style="padding:14px;">${renderRouteSvg(toShow)}</div>
     <div class="chiprow">
       <div class="chip ${!App.ui.selectedJourney?'active':''}" onclick="selectMapJourney(null)">Összes út</div>
-      ${journeys.map(j=>`<div class="chip ${App.ui.selectedJourney===j.id?'active':''}" onclick="selectMapJourney('${j.id}')">${escapeHtml(j.name)}</div>`).join('')}
+      ${journeys.map(j=>`<div class="chip ${App.ui.selectedJourney===j.id?'active':''}" data-click="selectMapJourney" data-id="${escapeHtml(j.id)}">${escapeHtml(j.name)}</div>`).join('')}
     </div>
   `;
 }
@@ -3045,7 +3073,7 @@ RENDERERS.finance = function(){
       ${f.mandatory.map((x,idx)=>`<div class="row">
         <span style="font-size:17px;">${escapeHtml(x.icon||'💳')}</span>
         <div class="row-main"><div class="row-title" style="font-size:14px;">${escapeHtml(x.name)}</div><span class="pill ${x.type==='fix'?'pill-blue':'pill-yellow'}" style="margin-top:3px;">${x.type==='fix'?'Fix':'Változó'}</span></div>
-        <span class="mono small" style="cursor:pointer;${!x.amount?'color:var(--muted);':''}" onclick="editMandatorySheet('${x.id}')">${x.amount?(x.amount).toLocaleString('hu-HU')+' Ft':'—'}</span>
+        <span class="mono small" style="cursor:pointer;${!x.amount?'color:var(--muted);':''}" data-click="editMandatorySheet" data-id="${escapeHtml(x.id)}">${x.amount?(x.amount).toLocaleString('hu-HU')+' Ft':'—'}</span>
       </div>`).join('')}
       <div class="small" style="padding:11px 0;color:var(--trail-yellow);cursor:pointer;" onclick="addMandatorySheet()">+ Új kötelező tétel</div>
     </div>
@@ -3054,13 +3082,13 @@ RENDERERS.finance = function(){
     ${f.discretionary.map((x,idx)=>{
       const pct = x.limit? Math.min(100,Math.round(100*(x.spent||0)/x.limit)) : 0;
       return `<div class="card">
-        <div class="flex between center"><span class="flex gap8 center"><span style="font-size:16px;">${escapeHtml(x.icon||'🛒')}</span><span style="font-weight:700;font-size:14px;">${escapeHtml(x.name)}</span></span><span class="flex gap8 center"><span class="pill pill-muted">Választható</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" onclick="manageDiscretionarySheet('${x.id}')">⋯</span></span></div>
+        <div class="flex between center"><span class="flex gap8 center"><span style="font-size:16px;">${escapeHtml(x.icon||'🛒')}</span><span style="font-weight:700;font-size:14px;">${escapeHtml(x.name)}</span></span><span class="flex gap8 center"><span class="pill pill-muted">Választható</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" data-click="manageDiscretionarySheet" data-id="${escapeHtml(x.id)}">⋯</span></span></div>
         <div class="flex between" style="margin:10px 0 6px;"><span class="mono" style="font-size:15px;">${(x.spent||0).toLocaleString('hu-HU')} Ft</span><span class="small muted">/ ${(x.limit||0).toLocaleString('hu-HU')} Ft</span></div>
         <div class="progwrap"><div class="progbar" style="width:${pct}%;${pct>=100?'background:var(--trail-red);':''}"></div></div>
         <div class="flex between" style="margin-top:8px;">
           <span class="small" style="color:${pct>=100?'var(--trail-red)':'var(--trail-blue)'};">✓ ${pct}% felhasználva</span>
           <span class="small" style="display:flex;gap:12px;">
-            <a style="color:var(--trail-yellow);cursor:pointer;" onclick="logSpendSheet('${x.id}')">+ Költés</a>
+            <a style="color:var(--trail-yellow);cursor:pointer;" data-click="logSpendSheet" data-id="${escapeHtml(x.id)}">+ Költés</a>
           </span>
         </div>
       </div>`;
@@ -3081,13 +3109,13 @@ RENDERERS.finance = function(){
       const pct = x.target? Math.min(100,Math.round(100*(x.saved||0)/x.target)) : 0;
       const statusColor = pct>=75?'var(--trail-green)':pct>=25?'var(--trail-yellow)':'var(--trail-red)';
       return `<div class="card">
-        <div class="flex between center"><span class="flex gap8 center"><span style="font-size:16px;">${escapeHtml(x.icon||'🏦')}</span><span style="font-weight:700;font-size:14px;">${escapeHtml(x.name)}</span></span><span class="flex gap8 center"><span class="pill pill-green">Megtakarítás</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" onclick="manageSavingsSheet('${x.id}')">⋯</span></span></div>
+        <div class="flex between center"><span class="flex gap8 center"><span style="font-size:16px;">${escapeHtml(x.icon||'🏦')}</span><span style="font-weight:700;font-size:14px;">${escapeHtml(x.name)}</span></span><span class="flex gap8 center"><span class="pill pill-green">Megtakarítás</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" data-click="manageSavingsSheet" data-id="${escapeHtml(x.id)}">⋯</span></span></div>
         <div class="flex between" style="margin:10px 0 6px;"><span class="mono" style="font-size:15px;">${(x.saved||0).toLocaleString('hu-HU')} Ft</span><span class="small muted">/ ${(x.target||0).toLocaleString('hu-HU')} Ft</span></div>
         <div class="progwrap"><div class="progbar" style="width:${pct}%;background:${statusColor};"></div></div>
         <div class="flex between" style="margin-top:8px;">
           <span class="small" style="color:${statusColor};">● ${pct<25?'Még csak '+pct+'%-on áll':pct+'% teljesítve'}</span>
           <span class="small" style="display:flex;gap:12px;">
-            <a style="color:var(--trail-yellow);cursor:pointer;" onclick="addToSavingsSheet('${x.id}')">+ Befizetés</a>
+            <a style="color:var(--trail-yellow);cursor:pointer;" data-click="addToSavingsSheet" data-id="${escapeHtml(x.id)}">+ Befizetés</a>
           </span>
         </div>
       </div>`;
@@ -3628,7 +3656,7 @@ function _journalMoodEmoji(mood){
 function openJournalComposerSheet(entryId){
   const entry = entryId ? App.state.journal.find(e=>e.id===entryId) : null;
   const chips = [1,2,3,4,5].map(m=>`<div class="chip${entry&&entry.mood===m?' active':''}" data-v="${m}">${_journalMoodEmoji(m)}</div>`).join('');
-  const delBtn = entry ? `<button class="iconbtn" onclick="deleteJournalEntry('${entry.id}')">🗑️</button>` : '';
+  const delBtn = entry ? `<button class="iconbtn" data-click="deleteJournalEntry" data-id="${escapeHtml(entry.id)}">🗑️</button>` : '';
   openSheet(`<div class="sheet-head"><div class="sheet-title">${entry?'Bejegyzés szerkesztése':'Új napló bejegyzés'}</div><div class="flex gap8">${delBtn}<button class="iconbtn" onclick="closeSheet()">✕</button></div></div>
     <div class="field"><label>Hangulat</label>
       <div class="chiprow" id="jn-mood">${chips}</div>
@@ -3660,7 +3688,7 @@ function deleteJournalEntry(entryId){
 function _journalEntryCardHtml(e){
   const emoji = e.mood ? _journalMoodEmoji(e.mood) : '📝';
   const preview = e.text ? escapeHtml(e.text).slice(0,140)+(e.text.length>140?'…':'') : '';
-  return `<div class="card tap" onclick="openJournalComposerSheet('${e.id}')">
+  return `<div class="card tap" data-click="openJournalComposerSheet" data-id="${escapeHtml(e.id)}">
     <div class="card-title">${emoji} ${fmtDateHu(e.date)}</div>
     ${preview?`<div class="small muted" style="margin-top:4px;line-height:1.5;">${preview}</div>`:''}
   </div>`;
