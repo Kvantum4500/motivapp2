@@ -31,8 +31,10 @@ import androidx.core.content.ContextCompat
  * as `window.NativeBridge`, so notification-derived pending records written by
  * [NotificationForwarderService] can be handed to the web app; [HealthConnectBridge]
  * as `window.AndroidHealth` (Health Connect sync), [BackupBridge] as `window.AndroidBackup`
- * (native "save as" export) and [TrackingBridge] as `window.AndroidTracking` (background
- * GPS tracking for the "Térkép" hike-tracking view) are wired the same way.
+ * (native "save as" export), [TrackingBridge] as `window.AndroidTracking` (background
+ * GPS tracking for the "Térkép" hike-tracking view) and [NotifyBridge] as
+ * `window.AndroidNotify` (local notifications + native streak tracking for the
+ * Életkampány/RPG feature) are wired the same way.
  *
  * Base class is androidx.activity.ComponentActivity, NOT plain android.app.Activity:
  * registerForActivityResult (used below for the geolocation prompt, the file chooser,
@@ -227,6 +229,12 @@ class MainWebViewActivity : ComponentActivity() {
 
         webView.addJavascriptInterface(BackupBridge(this), "AndroidBackup")
         webView.addJavascriptInterface(TrackingBridge(this), "AndroidTracking")
+
+        webView.addJavascriptInterface(NotifyBridge(this), "AndroidNotify")
+        // Idempotent (ExistingPeriodicWorkPolicy.KEEP), same reasoning as
+        // HealthSyncScheduler.schedule above - safe to call unconditionally on every
+        // app start; RpgStreakWorker itself no-ops if the RPG feature was never used.
+        RpgStreakScheduler.schedule(applicationContext)
 
         webView.loadUrl(LAUNCH_URL)
 
