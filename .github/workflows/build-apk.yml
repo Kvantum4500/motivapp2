@@ -56,14 +56,16 @@ jobs:
           fi
           echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android.keystore
 
-      - name: Print signing certificate SHA256 fingerprint
+      - name: Print signing certificate fingerprints
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
-          echo "== Fingerprint of the key this build will sign with =="
-          keytool -list -v -keystore android.keystore -storepass "$ANDROID_KEYSTORE_PASSWORD" | grep -i "SHA256:"
-          echo "Compare this against the sha256_cert_fingerprints entries in"
+          echo "== Fingerprints of the key this build will sign with =="
+          keytool -list -v -keystore android.keystore -storepass "$ANDROID_KEYSTORE_PASSWORD" | grep -iE "SHA1:|SHA256:"
+          echo "Compare the SHA256 line against the sha256_cert_fingerprints entries in"
           echo "https://kvantum4500.github.io/.well-known/assetlinks.json"
+          echo "The SHA1 line is what a Google Maps API key's Android app restriction"
+          echo "(package name + SHA-1 fingerprint) needs - see JourneyMapActivity.kt."
 
       # The Android/Gradle project under android/app (and friends) is now
       # committed source - see the "Scaffold Android project" workflow and
