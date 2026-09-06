@@ -52,7 +52,6 @@
   <string name="journeyMapUnlockConfirmNo">Mégse</string>
   <string name="journeyMapBudgetDialogTitle">Havi térkép-keret</string>
   <string name="journeyMapBudgetSave">Mentés</string>
-  <string name="journeyMapBudgetCancel">Mégse</string>
   <string name="journeyMapClose">Bezárás</string>
   <string name="journeyMapSettings">Beállítások</string>
   <string name="journeyMapMultipleJourneysFormat">%1$d túra</string>

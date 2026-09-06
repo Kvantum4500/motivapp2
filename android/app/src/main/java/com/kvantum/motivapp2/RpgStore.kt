@@ -16,23 +16,28 @@ import android.content.SharedPreferences
  */
 object RpgStore {
     private const val PREFS_FILE_NAME = "motivapp2_rpg"
-    private const val KEY_STREAK_DAYS = "streak_days"
+    // Régebbi néven "streak_days" volt - a webes rpgCurrentStreak() valójában EGYMÁST
+    // KÖVETŐ HETEKET számol (ld. index.html "X hetes sorozat" szövege), nem napokat.
+    // Az elnevezés-csere miatt egy már telepített app egyszeri, ártalmatlan 0-ra
+    // visszaálló számlálót lát ennél a mezőnél - ez csak egy natívan tükrözött,
+    // származtatott érték, nem az igazság forrása (az a JS oldali App.state.rpg).
+    private const val KEY_STREAK_WEEKS = "streak_weeks"
     private const val KEY_LAST_ACTIVE_DATE = "last_active_date"
     private const val KEY_LAST_NOTIFIED_DATE = "last_notified_date"
 
     private fun prefs(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_FILE_NAME, Context.MODE_PRIVATE)
 
-    fun saveActivity(context: Context, streakDays: Int, lastActiveDateIso: String) {
+    fun saveActivity(context: Context, streakWeeks: Int, lastActiveDateIso: String) {
         prefs(context).edit()
-            .putInt(KEY_STREAK_DAYS, streakDays)
+            .putInt(KEY_STREAK_WEEKS, streakWeeks)
             .putString(KEY_LAST_ACTIVE_DATE, lastActiveDateIso)
             .apply()
     }
 
     fun lastActiveDate(context: Context): String? = prefs(context).getString(KEY_LAST_ACTIVE_DATE, null)
 
-    fun streakDays(context: Context): Int = prefs(context).getInt(KEY_STREAK_DAYS, 0)
+    fun streakWeeks(context: Context): Int = prefs(context).getInt(KEY_STREAK_WEEKS, 0)
 
     fun lastNotifiedDate(context: Context): String? = prefs(context).getString(KEY_LAST_NOTIFIED_DATE, null)
 

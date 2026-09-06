@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.0';
+const APP_VERSION = '2.2.1';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.0';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.1';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -508,7 +508,7 @@ async function loadState(){
       if(!App.state.healthConnect || typeof App.state.healthConnect !== 'object') App.state.healthConnect = d.healthConnect;
       if(!App.state.rpg || typeof App.state.rpg !== 'object') App.state.rpg = d.rpg;
       if(!Array.isArray(App.state.rpg.weeks) || App.state.rpg.weeks.length !== 52) App.state.rpg.weeks = d.rpg.weeks;
-      App.state.rpg.weeks.forEach(w=>{ if(!w || !Array.isArray(w.quests)) w.quests = []; });
+      App.state.rpg.weeks = App.state.rpg.weeks.map(w=> (w && Array.isArray(w.quests)) ? w : {quests:[]});
       if(!Array.isArray(App.state.rpg.quarterReflections) || App.state.rpg.quarterReflections.length !== 4) App.state.rpg.quarterReflections = ['','','',''];
       if(!Array.isArray(App.state.rpg.favorites)) App.state.rpg.favorites = [];
       if(!Array.isArray(App.state.rpg.bossNotified)) App.state.rpg.bossNotified = [];
@@ -3826,7 +3826,7 @@ function applyImportedJson(text){
   if(!next.healthConnect || typeof next.healthConnect !== 'object') next.healthConnect = d.healthConnect;
   if(!next.rpg || typeof next.rpg !== 'object') next.rpg = d.rpg;
   if(!Array.isArray(next.rpg.weeks) || next.rpg.weeks.length !== 52) next.rpg.weeks = d.rpg.weeks;
-  next.rpg.weeks.forEach(w=>{ if(!w || !Array.isArray(w.quests)) w.quests = []; });
+  next.rpg.weeks = next.rpg.weeks.map(w=> (w && Array.isArray(w.quests)) ? w : {quests:[]});
   if(!Array.isArray(next.rpg.quarterReflections) || next.rpg.quarterReflections.length !== 4) next.rpg.quarterReflections = ['','','',''];
   if(!Array.isArray(next.rpg.favorites)) next.rpg.favorites = [];
   if(!Array.isArray(next.rpg.bossNotified)) next.rpg.bossNotified = [];
