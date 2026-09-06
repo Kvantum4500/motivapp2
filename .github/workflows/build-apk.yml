@@ -67,6 +67,22 @@ jobs:
           echo "The SHA1 line is what a Google Maps API key's Android app restriction"
           echo "(package name + SHA-1 fingerprint) needs - see JourneyMapActivity.kt."
 
+      # Confirms the MAPS_API_KEY repo secret is actually reaching this build,
+      # without ever printing the key itself - only its length. An empty value
+      # here means the "MAPS_API_KEY" secret isn't set (or is set empty) in this
+      # repo's Settings -> Secrets and variables -> Actions; the build still
+      # succeeds either way (see app/build.gradle's mapsApiKey resolution), the
+      # native map screen just won't render tiles until it's non-empty.
+      - name: Check MAPS_API_KEY secret is set
+        env:
+          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
+        run: |
+          if [ -z "${MAPS_API_KEY:-}" ]; then
+            echo "::warning::MAPS_API_KEY secret is EMPTY or not set - the native map screen (JourneyMapActivity) will show blank tiles until it's added."
+          else
+            echo "MAPS_API_KEY is set (length: ${#MAPS_API_KEY} characters). A real Google Maps key is typically 39 characters."
+          fi
+
       # The Android/Gradle project under android/app (and friends) is now
       # committed source - see the "Scaffold Android project" workflow and
       # its PR. Do NOT run `bubblewrap update` here: it would regenerate the
