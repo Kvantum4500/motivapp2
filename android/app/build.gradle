@@ -28,7 +28,7 @@ plugins {
 }
 
 // Google Maps API key for the native journey-map screen (JourneyMapActivity /
-// window.AndroidTracking.openJourneyMap) - never hardcoded in source. Resolved from,
+// window.AndroidMaps.openJourneysMap) - never hardcoded in source. Resolved from,
 // in order: a local `local.properties` MAPS_API_KEY=... line (gitignored, for
 // developer machines), or the MAPS_API_KEY environment variable (set from the
 // MAPS_API_KEY GitHub Actions secret in build-apk.yml). Defaults to an empty string

@@ -132,7 +132,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Native journey map screen (window.AndroidTracking.openJourneyMap), showing a
+        <!-- Native journey map screen (window.AndroidMaps.openJourneysMap), showing a
              recorded hike's route over real Google Maps tiles - see MapsBridge.kt /
              JourneyMapActivity.kt / MapsUsageStore.kt. Not exported: only ever launched
              from within the app itself (MainWebViewActivity's own bridge call), never a

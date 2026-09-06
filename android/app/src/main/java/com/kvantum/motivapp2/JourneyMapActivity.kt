@@ -186,7 +186,7 @@ class JourneyMapActivity : FragmentActivity() {
                 }
                 refreshUsageBar()
             }
-            .setNegativeButton(R.string.journeyMapBudgetCancel, null)
+            .setNegativeButton(R.string.journeyMapUnlockConfirmNo, null)
             .show()
     }
 

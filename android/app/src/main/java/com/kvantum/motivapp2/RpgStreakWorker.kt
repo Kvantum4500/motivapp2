@@ -36,7 +36,7 @@ class RpgStreakWorker(appContext: Context, params: WorkerParameters) :
 
         if (LocalTime.now().hour < EVENING_REMINDER_HOUR) return Result.success()
 
-        val streak = RpgStore.streakDays(applicationContext)
+        val streak = RpgStore.streakWeeks(applicationContext)
         val body = if (streak > 0) {
             "Még nem szereztél XP-t ma - ne törd meg a(z) $streak hetes sorozatot!"
         } else {
