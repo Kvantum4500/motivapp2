@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.5';
+const APP_VERSION = '2.2.6';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.5';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.6';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -2723,7 +2723,7 @@ Ha van konkrét, felvehető javaslatod, a válaszod VÉGÉRE — a szöveges ré
 \`\`\`json
 {"suggestions":[{"type":"finance","name":"Telefon","amount":7480},{"type":"finance","name":"Áram","amount":3303}]}
 \`\`\`
-A type lehet "task" ({"type":"task","title":"..."}) egyszerű teendőhöz, "finance" ({"type":"finance","name":"...","amount":szám}) akkor, ha a felhasználó egy már kifizetett vagy rögzítendő számlaösszeget közöl, "activity_template" ({"type":"activity_template","dayType":"nappal|ejszaka|pihen|szabi|egyeb","activity":{"label":"...","icon":"emoji","durationMin":szám,"physical":1-10,"mental":1-10,"experience":1-10,"energyBefore":0-100,"energyAfter":0-100}}) AKKOR, ha a felhasználó azt kéri, hogy egy aktivitást (pl. a mai naplózott munkát) mentsél el egy adott NAPTÍPUS alap/tipikus mintájaként, és alkalmazd a jövőbeli hasonló napokra is, "income" ({"type":"income","amount":szám}) AKKOR, ha a felhasználó a havi (nettó) fizetését/bevételét szeretné beállítani vagy módosítani, vagy "schedule_pattern" ({"type":"schedule_pattern","startDate":"ÉÉÉÉ-HH-NN","pattern":["nappal"|"ejszaka"|"pihen"|"szabi"|"egyeb", ...]}) AKKOR, ha a felhasználó leírja a teljes ismétlődő műszakrendjét (pl. "3 nap nappalos, 3 nap éjszaka, 3 nap szabad, ismétlődik"). A pattern tömb egy TELJES ciklust írjon le, elemenként egy nap, a megadott sorrendben, a startDate-től kezdve, a startDate a felhasználó által megadott ELSŐ nap valódi ÉÉÉÉ-HH-NN dátuma (a lenti kontextusban kapott mai valódi dátumhoz viszonyítva számold ki az évet). FONTOS SZÓHASZNÁLAT: "szabadnap"/"szabad nap"/"pihenő" = pihen típus (NEM szabi!). "szabi"/"szabadság" típust csak akkor használj, ha a felhasználó kifejezetten tervezett szabadságot/PTO-t említ, nem simán pihenőnapot egy műszakciklusban. A dayType és a pattern elemei PONTOSAN ez az öt kulcs egyike lehet: nappal, ejszaka, pihen, szabi, egyeb. Az activity mezőket a kontextusban kapott, már rögzített aktivitás valós adataiból töltsd ki, ne találj ki újakat, ha a felhasználó egy meglévőre hivatkozik. HA A FELHASZNÁLÓ TÖBB TÉTELT SOROL FEL EGYSZERRE (pl. több számlát), MINDEGYIKHEZ ADJ KÜLÖN elemet a suggestions tömbben — soha ne vond össze egyetlen feladattá. Ha nincs konkrét javaslatod, hagyd ki teljesen a JSON blokkot.`;
+A type lehet "task" ({"type":"task","title":"..."}) egyszerű teendőhöz, "event" ({"type":"event","title":"...","date":"ÉÉÉÉ-HH-NN","time":"ÓÓ:PP"}) egy konkrét naptári időponthoz kötött eseményhez (NEM egyszerű teendő — akkor használd, ha a felhasználó egy dátumhoz/időponthoz köti a dolgot, pl. "holnap 15:00 fogorvos"), "finance" ({"type":"finance","name":"...","amount":szám}) akkor, ha a felhasználó egy már kifizetett vagy rögzítendő számlaösszeget közöl, "activity_template" ({"type":"activity_template","dayType":"nappal|ejszaka|pihen|szabi|egyeb","activity":{"label":"...","icon":"emoji","durationMin":szám,"physical":1-10,"mental":1-10,"experience":1-10,"energyBefore":0-100,"energyAfter":0-100}}) AKKOR, ha a felhasználó azt kéri, hogy egy aktivitást (pl. a mai naplózott munkát) mentsél el egy adott NAPTÍPUS alap/tipikus mintájaként, és alkalmazd a jövőbeli hasonló napokra is, "income" ({"type":"income","amount":szám}) AKKOR, ha a felhasználó a havi (nettó) fizetését/bevételét szeretné beállítani vagy módosítani, "schedule_pattern" ({"type":"schedule_pattern","startDate":"ÉÉÉÉ-HH-NN","pattern":["nappal"|"ejszaka"|"pihen"|"szabi"|"egyeb", ...]}) AKKOR, ha a felhasználó leírja a teljes ismétlődő műszakrendjét (pl. "3 nap nappalos, 3 nap éjszaka, 3 nap szabad, ismétlődik"), "workout" ({"type":"workout","category":"...","durationMin":szám,"muscleGroups":["mell"|"hat"|"vall"|"kar"|"core"|"lab", ...],"date":"ÉÉÉÉ-HH-NN","notes":"..."}) AKKOR, ha a felhasználó egy elvégzett edzést szeretne naplózni (muscleGroups és notes elhagyható, ha nem egyértelmű; date hiányában a mai nap), "rpg_quest_add" ({"type":"rpg_quest_add","trackId":"freedom|finance|mental|physical|massage|video|camper|coding|relationship","text":"...","xp":10|20|35}) AKKOR, ha a felhasználó az Életkampányhoz (Kaland) szeretne egy küldetést felvenni az AKTUÁLIS ciklusra (a trackId-t a kontextusban kapott 9 terület közül válaszd a legjobban illő alapján, xp nehézség szerint: könnyű 10, közepes 20, nehéz 35), "rpg_quest_complete" ({"type":"rpg_quest_complete","text":"...","trackId":"... (opcionális, csak ha egyértelmű)"}) AKKOR, ha a felhasználó egy MÁR FELVETT, a kontextusban látható Kaland-küldetést jelent késznek — a text mezőbe a LEHETŐ LEGPONTOSABBAN a meglévő küldetés szövegét írd, hogy egyértelműen beazonosítható legyen, "start_journey" ({"type":"start_journey"}) AKKOR, ha a felhasználó egy túra/kirándulás GPS-követésének elindítását kéri (csak akkor javasold, ha a kontextus szerint épp NINCS folyamatban túrakövetés), vagy "stop_journey" ({"type":"stop_journey"}) AKKOR, ha egy FOLYAMATBAN LÉVŐ túra leállítását/mentését kéri (csak akkor javasold, ha a kontextus szerint épp FUT a túrakövetés). A pattern tömb egy TELJES ciklust írjon le, elemenként egy nap, a megadott sorrendben, a startDate-től kezdve, a startDate a felhasználó által megadott ELSŐ nap valódi ÉÉÉÉ-HH-NN dátuma (a lenti kontextusban kapott mai valódi dátumhoz viszonyítva számold ki az évet). FONTOS SZÓHASZNÁLAT: "szabadnap"/"szabad nap"/"pihenő" = pihen típus (NEM szabi!). "szabi"/"szabadság" típust csak akkor használj, ha a felhasználó kifejezetten tervezett szabadságot/PTO-t említ, nem simán pihenőnapot egy műszakciklusban. A dayType és a pattern elemei PONTOSAN ez az öt kulcs egyike lehet: nappal, ejszaka, pihen, szabi, egyeb. Az activity mezőket a kontextusban kapott, már rögzített aktivitás valós adataiból töltsd ki, ne találj ki újakat, ha a felhasználó egy meglévőre hivatkozik. HA A FELHASZNÁLÓ TÖBB TÉTELT SOROL FEL EGYSZERRE (pl. több számlát), MINDEGYIKHEZ ADJ KÜLÖN elemet a suggestions tömbben — soha ne vond össze egyetlen feladattá. Ha nincs konkrét javaslatod, hagyd ki teljesen a JSON blokkot.`;
 
 function buildAiContext(){
   const iso = todayISO();
@@ -2741,6 +2741,20 @@ function buildAiContext(){
   const learned = Object.keys(byType).filter(k=>byType[k].n>=2).map(k=>byType[k].label+': átlag '+Math.round(byType[k].d/byType[k].n)+' energia/alkalom ('+byType[k].n+' adat)').join('; ')||'még nincs elég adat';
   const tplKeys = Object.keys(App.state.dayTypeTemplates||{});
   const tplSummary = tplKeys.length? tplKeys.map(k=>k+': '+App.state.dayTypeTemplates[k].label).join('; ') : 'nincs beállítva';
+  // Életkampány (Kaland): az AKTUÁLIS ciklus nyitott (még nem teljesített) küldetései —
+  // ez adja a rpg_quest_complete text-matcheléshez a lehetséges jelölteket, ezért a
+  // pontos, meglévő szöveget adjuk át, nem összefoglalva.
+  let rpgSummary = 'nincs még Életkampány karakter';
+  if(App.state.rpg && App.state.rpg.onboarded){
+    const cur = rpgGetCurrentWeekIndex();
+    const week = App.state.rpg.weeks[cur-1];
+    const openQuests = (week && week.quests || []).filter(q=>!q.done)
+      .map(q=>'"'+q.text+'" ('+(RPG_TRACK_BY_ID[q.trackId]||{}).name+')').join('; ') || 'nincs nyitott küldetés';
+    rpgSummary = cur+'. ciklus / '+rpgWeeksTotal()+' — nyitott küldetések: '+openQuests;
+  }
+  const trackingSummary = App.ui.tracking
+    ? 'IGEN, folyamatban (eddig '+trackDistanceKm().toFixed(1)+' km, '+fmtElapsed(Date.now()-App.ui.trackStart)+')'
+    : 'nincs folyamatban';
   return 'Mai valódi naptári dátum: '+iso+' (ehhez viszonyítva számolj minden jövőbeli/relatív dátumot)\nMai nap típusa: '+dt+' (belső kulcsa: '+dayTypeFor(iso)+')\nMai feladatok: '+(tasksToday.map(t=>t.title).join('; ')||'nincs')+
     '\nUtolsó edzések: '+recentW+'\nUtolsó testsúly: '+(lastW?lastW.kg+' kg':'nincs adat')+
     '\nFeloldott skillek: '+unlocked+'\nMa naplózva — alvás: '+(h.sleepH?fmtHealthNum(h.sleepH,1)+' óra':'nincs adat')+
@@ -2748,7 +2762,9 @@ function buildAiContext(){
     '\nMeglévő kötelező kiadás kategóriák (ezeket a pontos neveket használd finance javaslatnál, ha van egyező): '+mandNames+
     '\nMai aktivitások és energiahatásuk: '+actSummary+'\nJelenlegi becsült energiaszint: '+(energyNow===null?'nincs mai adat':energyNow+'%')+
     '\nSaját tanult energiaátlagok tevékenységenként: '+learned+
-    '\nMeglévő naptípus-aktivitásminták: '+tplSummary;
+    '\nMeglévő naptípus-aktivitásminták: '+tplSummary+
+    '\nÉletkampány (Kaland) állása: '+rpgSummary+
+    '\nFolyamatban van-e most túrakövetés: '+trackingSummary;
 }
 function parseAiResponse(raw){
   let m = raw.match(/```json\s*([\s\S]*?)```/i);
@@ -3174,7 +3190,7 @@ function renderAiChat(){
       ${(m.suggestions&&m.suggestions.length)? m.suggestions.map((s,si)=>`
         <div class="suggestcard">
           <div class="st">🟡 Javaslat — megerősítést kér</div>
-          <div style="font-size:13.5px;font-weight:600;">${s.type==='finance'? escapeHtml(s.name)+' — kötelező kiadás' : s.type==='activity_template'? (DAY_TYPE_SHORT[s.dayType]||s.dayType)+' napok mintája: '+escapeHtml((s.activity||{}).label||'') : s.type==='income'? 'Havi bevétel beállítása' : s.type==='schedule_pattern'? 'Műszakrend beállítása ('+(s.pattern||[]).length+' napos ciklus)' : s.type==='meal'? '🍽️ '+escapeHtml(s.name||'Étkezés') : s.type==='task'? '📋 '+escapeHtml(s.title||'Feladat') : s.type==='event'? '🗓️ '+escapeHtml(s.title||'Esemény') : escapeHtml(s.title||'')}</div>
+          <div style="font-size:13.5px;font-weight:600;">${s.type==='finance'? escapeHtml(s.name)+' — kötelező kiadás' : s.type==='activity_template'? (DAY_TYPE_SHORT[s.dayType]||s.dayType)+' napok mintája: '+escapeHtml((s.activity||{}).label||'') : s.type==='income'? 'Havi bevétel beállítása' : s.type==='schedule_pattern'? 'Műszakrend beállítása ('+(s.pattern||[]).length+' napos ciklus)' : s.type==='meal'? '🍽️ '+escapeHtml(s.name||'Étkezés') : s.type==='task'? '📋 '+escapeHtml(s.title||'Feladat') : s.type==='event'? '🗓️ '+escapeHtml(s.title||'Esemény') : s.type==='workout'? '💪 '+escapeHtml(s.category||'Edzés')+' naplózása' : s.type==='rpg_quest_add'? '⚔️ Kaland küldetés: '+escapeHtml(s.text||'') : s.type==='rpg_quest_complete'? '✅ Kaland küldetés teljesítése: '+escapeHtml(s.text||'') : s.type==='start_journey'? '🥾 Túrakövetés elindítása' : s.type==='stop_journey'? '⏹️ Túrakövetés leállítása és mentése' : escapeHtml(s.title||'')}</div>
           ${s.type==='schedule_pattern'? `<div class="small muted" style="margin-top:2px;">Kezdés: ${s.startDate||'?'} — ${(s.pattern||[]).map(p=>DAY_TYPE_SHORT[p]||p).join(' → ')}</div>`:''}
           ${s.type==='activity_template'? `<div class="small muted" style="margin-top:2px;">${(s.activity||{}).durationMin||0} perc · 💪${(s.activity||{}).physical||'?'} 🧠${(s.activity||{}).mental||'?'} · energia ${(s.activity||{}).energyBefore||'?'}→${(s.activity||{}).energyAfter||'?'} — jövőbeli hasonló napokra is felkerül</div>`:''}
           ${(s.type==='finance'||s.type==='income')? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="number" value="${Number(s.amount)||0}" style="width:100%;margin-top:2px;"></label>` : ''}
@@ -3190,6 +3206,18 @@ function renderAiChat(){
             <label class="small muted" style="display:block;margin-top:6px;">Cím<input id="ai-sugg-title-${i}-${si}" type="text" value="${escapeHtml(s.title||'')}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${s.date||''}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Időpont<input id="ai-sugg-time-${i}-${si}" type="time" value="${s.time||''}" style="width:100%;margin-top:2px;"></label>` : ''}
+          ${s.type==='workout'? `<label class="small muted" style="display:block;margin-top:6px;">Típus<input id="ai-sugg-cat-${i}-${si}" type="text" value="${escapeHtml(s.category||'Edzés')}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${s.date||todayISO()}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Időtartam (perc)<input id="ai-sugg-dur-${i}-${si}" type="number" value="${parseInt(s.durationMin)||0}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Érintett izomcsoportok</label>
+            <div class="chiprow" id="ai-sugg-muscles-${i}-${si}">${MUSCLE_GROUPS.map(mg=>`<div class="chip ${(s.muscleGroups||[]).includes(mg.id)?'active':''}" data-v="${mg.id}">${mg.label}</div>`).join('')}</div>` : ''}
+          ${s.type==='rpg_quest_add'? `<label class="small muted" style="display:block;margin-top:6px;">Terület<select id="ai-sugg-track-${i}-${si}" style="width:100%;margin-top:2px;">${RPG_TRACKS.map(t=>`<option value="${t.id}" ${s.trackId===t.id?'selected':''}>${t.icon} ${escapeHtml(t.name)}</option>`).join('')}</select></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Küldetés szövege<input id="ai-sugg-text-${i}-${si}" type="text" value="${escapeHtml(s.text||'')}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">XP<input id="ai-sugg-xp-${i}-${si}" type="number" value="${parseInt(s.xp)||10}" style="width:100%;margin-top:2px;"></label>` : ''}
+          ${s.type==='rpg_quest_complete'? `<div class="small muted" style="margin-top:2px;">A jelenlegi ciklus küldetései közül a legjobban illőt jelöljük készre — pontosítsd, ha nem egyértelmű.</div>
+            <label class="small muted" style="display:block;margin-top:6px;">Küldetés szövege<input id="ai-sugg-text-${i}-${si}" type="text" value="${escapeHtml(s.text||'')}" style="width:100%;margin-top:2px;"></label>` : ''}
+          ${s.type==='start_journey'? `<div class="small muted" style="margin-top:2px;">Elindítja a GPS-alapú túrakövetést (KÖVETÉS nézet) — utána a Térkép fülön követheted.</div>` : ''}
+          ${s.type==='stop_journey'? `<div class="small muted" style="margin-top:2px;">Leállítja a futó túrakövetést, és megnyitja a mentés-ablakot, ahol elnevezheted a túrát.</div>` : ''}
           <div class="flex gap8" style="margin-top:8px;">
             <button class="btn btn-primary btn-sm" onclick="acceptAiSuggestion(${i},${si})">Elfogadom ✓</button>
             <button class="btn btn-ghost btn-sm" onclick="rejectAiSuggestion(${i},${si})">Mégse</button>
@@ -3197,6 +3225,12 @@ function renderAiChat(){
         </div>`).join('') : ''}
     </div>`).join('');
   log.scrollTop = log.scrollHeight;
+  // A workout-javaslat izomcsoport chip-jei ugyanúgy toggle-olnak, mint a kézi
+  // "Új edzés" sheet #nw-muscles chiprow-ja (ld. openAddWorkoutSheet) - itt is a
+  // rendereléskor közvetlenül bekötött, hatókörre szűkített listenert használjuk.
+  log.querySelectorAll('[id^="ai-sugg-muscles-"] .chip').forEach(c=>{
+    c.addEventListener('click', ()=>c.classList.toggle('active'));
+  });
 }
 function normFin(str){ return (str||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,''); }
 function matchActivityTypeId(label){
@@ -3280,6 +3314,52 @@ function applyAiSuggestion(s){
     App.state.events.push({id:uid(),date:s.date||todayISO(),title:s.title,time:s.time||'',type:s.eventType||'esemeny'});
     return '🗓️ '+(s.title||'Esemény')+' hozzáadva'+(s.date?' ('+fmtDateHu(s.date)+(s.time?', '+s.time:'')+')':'')+' ✓';
   }
+  if(s.type==='workout'){
+    // Ugyanaz a mezőkészlet, mint a manuális "Új edzés" sheet (saveNewWorkout, lásd
+    // App.state.workouts.push).
+    const muscleGroups = Array.isArray(s.muscleGroups) ? s.muscleGroups.filter(m=>MUSCLE_GROUPS.some(mg=>mg.id===m)) : [];
+    App.state.workouts.push({id:uid(),category:s.category||'Edzés',date:s.date||todayISO(),durationMin:parseInt(s.durationMin)||null,notes:s.notes||'',muscleGroups});
+    return '💪 '+(s.category||'Edzés')+' naplózva'+(s.date?' ('+fmtDateHu(s.date)+')':'')+' ✓';
+  }
+  if(s.type==='rpg_quest_add'){
+    // Ugyanaz a mezőkészlet, mint a manuális küldetés-hozzáadás (rpgAddQuest) - azt
+    // hívjuk, hogy a natív streak-mirroring stb. mellékhatásai (ha lennének a
+    // jövőben) egy helyen éljenek, ne duplikálódjanak itt.
+    if(!App.state.rpg || !App.state.rpg.onboarded) return 'Még nincs elindítva az Életkampány.';
+    const track = RPG_TRACK_BY_ID[s.trackId];
+    if(!track || !s.text) return 'Nem sikerült értelmezni a küldetést ✗';
+    const cur = rpgGetCurrentWeekIndex();
+    rpgAddQuest(cur, s.trackId, s.text, Number(s.xp)||10);
+    return '⚔️ '+s.text+' hozzáadva ('+track.name+', +'+(Number(s.xp)||10)+' XP) ✓';
+  }
+  if(s.type==='rpg_quest_complete'){
+    // A text mezőt (normFin-nel normalizálva, mindkét irányú substring-illesztéssel -
+    // ugyanaz a minta, mint a finance-javaslat meglévő-tétel keresésénél feljebb) a
+    // JELENLEGI ciklus még nem teljesített küldetéseihez illesztjük - lásd
+    // buildAiContext(), ami pontosan ezt a listát adja át kontextusként az AI-nak.
+    if(!App.state.rpg || !App.state.rpg.onboarded) return 'Még nincs elindítva az Életkampány.';
+    const cur = rpgGetCurrentWeekIndex();
+    const week = App.state.rpg.weeks[cur-1];
+    const norm = normFin(s.text||'');
+    let q = null;
+    if(norm && week){
+      q = week.quests.find(x=>!x.done && (!s.trackId || x.trackId===s.trackId) && (normFin(x.text).includes(norm) || norm.includes(normFin(x.text))));
+      if(!q) q = week.quests.find(x=>!x.done && (normFin(x.text).includes(norm) || norm.includes(normFin(x.text))));
+    }
+    if(!q) return 'Nem találtam ehhez illő, még nem teljesített küldetést ebben a ciklusban ✗';
+    rpgToggleQuest(cur, q.id);
+    return null; // rpgToggleQuest saját (XP/szintlépés) toast-ot mutat, ne írjuk felül
+  }
+  if(s.type==='start_journey'){
+    if(App.ui.tracking) return 'Már fut egy túrakövetés.';
+    startTracking();
+    return '🥾 Túrakövetés elindítva — nyisd meg a Térkép fület a részletekhez.';
+  }
+  if(s.type==='stop_journey'){
+    if(!App.ui.tracking) return 'Nincs éppen futó túrakövetés.';
+    stopTracking(); // maga nyitja meg a "Túra mentése" elnevező ablakot
+    return '⏹️ Túrakövetés leállítva — nevezd el és mentsd a felugró ablakban.';
+  }
   // Ismeretlen javaslat-típus: NEM mentünk semmit "találgatva" (korábban minden fel
   // nem ismert type itt hibásan feladatként mentődött, ami 'event' javaslatra téves
   // volt) — inkább jelezzük, hogy nem sikerült feldolgozni.
@@ -3312,9 +3392,28 @@ function acceptAiSuggestion(mi,si){
     if(titleEl && titleEl.value.trim()) s.title=titleEl.value.trim();
     if(dateEl) s.date=dateEl.value||'';
     if(timeEl) s.time=timeEl.value||'';
+  } else if(s.type==='workout'){
+    const catEl=document.getElementById('ai-sugg-cat-'+mi+'-'+si);
+    const dateEl=document.getElementById('ai-sugg-date-'+mi+'-'+si);
+    const durEl=document.getElementById('ai-sugg-dur-'+mi+'-'+si);
+    const musclesRow=document.getElementById('ai-sugg-muscles-'+mi+'-'+si);
+    if(catEl && catEl.value.trim()) s.category=catEl.value.trim();
+    if(dateEl) s.date=dateEl.value||todayISO();
+    if(durEl) s.durationMin=parseInt(durEl.value)||null;
+    if(musclesRow) s.muscleGroups=[...musclesRow.querySelectorAll('.chip.active')].map(c=>c.dataset.v);
+  } else if(s.type==='rpg_quest_add'){
+    const trackEl=document.getElementById('ai-sugg-track-'+mi+'-'+si);
+    const textEl=document.getElementById('ai-sugg-text-'+mi+'-'+si);
+    const xpEl=document.getElementById('ai-sugg-xp-'+mi+'-'+si);
+    if(trackEl) s.trackId=trackEl.value;
+    if(textEl && textEl.value.trim()) s.text=textEl.value.trim();
+    if(xpEl) s.xp=parseInt(xpEl.value)||10;
+  } else if(s.type==='rpg_quest_complete'){
+    const textEl=document.getElementById('ai-sugg-text-'+mi+'-'+si);
+    if(textEl && textEl.value.trim()) s.text=textEl.value.trim();
   }
   const msg = applyAiSuggestion(s);
-  toast(msg);
+  if(msg) toast(msg);
   App.state.aiChat[mi].suggestions.splice(si,1);
   saveState(); renderAiChat(); renderApp();
 }
