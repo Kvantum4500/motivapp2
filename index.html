@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.1.8';
+const APP_VERSION = '2.1.9';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.1.8';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.1.9';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -2383,10 +2383,18 @@ function renderJourneysView(c){
         <span style="font-size:18px;">🥾</span>
         <div class="row-main"><div class="row-title" style="font-size:14px;">${escapeHtml(j.name)}</div>
         <div class="row-sub">${fmtDateHu(j.date)} · ${(j.distanceKm||0).toFixed(1)} km · ${fmtDuration(j.durationMin)}</div></div>
-        ${androidMapsAvailable() ? `<button class="iconbtn" data-click="openJourneyNativeMap" data-id="${escapeHtml(j.id)}" title="Natív térkép" onclick="event.stopPropagation();">🗺️</button>` : ''}
+        ${androidMapsAvailable() ? `<button class="iconbtn" data-native-map-id="${escapeHtml(j.id)}" title="Natív térkép">🗺️</button>` : ''}
         <span class="g" onclick="event.stopPropagation();deleteJourney('${j.id}')">🗑️</span>
       </div>`).join('') : `<div class="empty"><div class="ic">🥾</div><div class="t">Még nincs mentett túra</div><div class="d">Indíts egy követést a TRACK fülön.</div></div>`}
   </div>`;
+  /* Ez a gomb NEM a globális [data-click] delegálást használja: a sor saját
+     onclick-je (navigáció) elé event.stopPropagation()-t kell tennünk, ami
+     viszont a document-ig bubbleoló globális listenert is elvágná — ezért
+     itt (a kampany [data-rpg-json] mintájához hasonlóan) közvetlenül a
+     rendereléskor bekötött, hatókörre szűkített listenert használunk. */
+  c.querySelectorAll('[data-native-map-id]').forEach(el=>{
+    el.addEventListener('click', (e)=>{ e.stopPropagation(); openJourneyNativeMap(el.dataset.nativeMapId); });
+  });
 }
 function renderTerkepContentWithTabs(){ RENDERERS.terkep(); }
 function deleteJourney(id){
@@ -2407,13 +2415,17 @@ function fmtDuration(min){ if(!min) return '?'; const h=Math.floor(min/60),m=Mat
 function renderMapView(c){
   const journeys = App.state.journeys;
   const toShow = App.ui.selectedJourney ? journeys.filter(j=>j.id===App.ui.selectedJourney) : journeys;
+  const hasRoutes = toShow.some(j=>j.points && j.points.length>1);
   c.innerHTML = `
+    ${androidMapsAvailable() && hasRoutes ? `<button class="btn btn-secondary btn-block" id="native-map-all-btn" style="margin-bottom:10px;">🗺️ Megnyitás valódi térképen</button>` : ''}
     <div class="card" style="padding:14px;">${renderRouteSvg(toShow)}</div>
     <div class="chiprow">
       <div class="chip ${!App.ui.selectedJourney?'active':''}" onclick="selectMapJourney(null)">Összes út</div>
       ${journeys.map(j=>`<div class="chip ${App.ui.selectedJourney===j.id?'active':''}" onclick="selectMapJourney('${j.id}')">${escapeHtml(j.name)}</div>`).join('')}
     </div>
   `;
+  const btn = document.getElementById('native-map-all-btn');
+  if(btn) btn.addEventListener('click', ()=> openJourneysNativeMap(toShow));
 }
 function selectMapJourney(id){ App.ui.selectedJourney = App.ui.selectedJourney===id? null : id; renderMapView(document.getElementById('terkep-content')); }
 function renderRouteSvg(journeys){
@@ -4366,11 +4378,17 @@ function androidNotifyAvailable(){
 function androidMapsAvailable(){
   return typeof window!=='undefined' && typeof window.AndroidMaps!=='undefined' && !!window.AndroidMaps;
 }
+function openJourneysNativeMap(journeys){
+  const withPts = (journeys||[]).filter(j=>j.points && j.points.length>1);
+  if(!withPts.length) return;
+  const payload = withPts.map(j=>({name:j.name, points:j.points}));
+  try{ window.AndroidMaps.openJourneysMap(JSON.stringify(payload)); }
+  catch(e){ toast('Nem sikerült megnyitni a natív térképet.'); }
+}
 function openJourneyNativeMap(id){
   const j = App.state.journeys.find(x=>x.id===id);
   if(!j) return;
-  try{ window.AndroidMaps.openJourneyMap(JSON.stringify(j.points||[]), j.name||'Túra'); }
-  catch(e){ toast('Nem sikerült megnyitni a natív térképet.'); }
+  openJourneysNativeMap([j]);
 }
 
 /* ---- Segédfüggvények ---- */

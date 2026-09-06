@@ -14,16 +14,18 @@ import androidx.activity.ComponentActivity
  * csak a natív Android appban elérhető lehetőséget nyit meg: window.AndroidMaps jelenléte
  * (androidMapsAvailable() a JS oldalon) jelzi, hogy a gomb egyáltalán megjelenjen-e.
  *
- * openJourneyMap(pointsJson, journeyName): a JS oldal egy már szerializált JSON tömb
- * stringet ad át a túra pontjaival ([{lat,lng},...]) és a túra nevét. A hívás a
- * [JourneyMapDataStore]-on keresztül adja át ezeket a [JourneyMapActivity]-nek (nem Intent
- * extra-kon keresztül — ld. JourneyMapDataStore doksi), majd elindítja azt.
+ * openJourneysMap(journeysJson): a JS oldal egy már szerializált JSON TÖMB stringet ad át,
+ * elemenként egy-egy túrával ({"name":"...","points":[{lat,lng},...]}) — egyetlen túra
+ * megnyitása is ezt hívja, egy egyelemű tömbbel (ld. openJourneysNativeMap()/
+ * openJourneyNativeMap() az index.html-ben). A hívás a [JourneyMapDataStore]-on keresztül adja
+ * át ezt a [JourneyMapActivity]-nek (nem Intent extra-kon keresztül — ld. JourneyMapDataStore
+ * doksi), majd elindítja azt.
  */
 class MapsBridge(private val activity: ComponentActivity) {
 
     @JavascriptInterface
-    fun openJourneyMap(pointsJson: String, journeyName: String) {
-        JourneyMapDataStore.writePending(activity.applicationContext, journeyName, pointsJson)
+    fun openJourneysMap(journeysJson: String) {
+        JourneyMapDataStore.writePending(activity.applicationContext, journeysJson)
         activity.runOnUiThread {
             try {
                 activity.startActivity(Intent(activity, JourneyMapActivity::class.java))
