@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- JourneyMapActivity (window.AndroidMaps.openJourneyMap) natív térkép-képernyője.
+<!-- JourneyMapActivity (window.AndroidMaps.openJourneysMap) natív térkép-képernyője.
      Egyszerű, kézzel írt XML (a projektben nincs Compose-beállítás), ugyanaz a minta,
      mint a többi natív-UI elemnél (ld. NativeBridge.kt/TrackingForegroundService.kt
      kommentjei) - ez az első hand-written layout XML ebben a modulban, a WebView-alapú

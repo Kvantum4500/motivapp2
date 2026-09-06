@@ -28,4 +28,14 @@
     <color name="journeyMapMuted">#93A79A</color>
     <color name="journeyMapGreen">#5C8F62</color>
     <color name="journeyMapRed">#C1432B</color>
+
+    <!-- Több túra egyidejű megjelenítéséhez (ld. JourneyMapActivity.setupMap) ciklikusan
+         használt útvonal-paletta - pontosan ugyanaz az 5 szín, ugyanabban a sorrendben,
+         mint a webes app renderRouteSvg()-jének colors tömbje (index.html), hogy a natív
+         és a webes útvonalnézet vizuálisan összhangban maradjon. -->
+    <color name="journeyMapRoute1">#D9A441</color>
+    <color name="journeyMapRoute2">#4A85AC</color>
+    <color name="journeyMapRoute3">#5C8F62</color>
+    <color name="journeyMapRoute4">#C1432B</color>
+    <color name="journeyMapRoute5">#93A79A</color>
 </resources>

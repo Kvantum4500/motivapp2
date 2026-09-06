@@ -25,10 +25,12 @@ import com.google.android.gms.maps.model.PolylineOptions
  * Natív, valódi térképcsempéken (Google Maps) rajzolt túra-nézet - a webes app
  * (index.html) meglévő renderRouteSvg()-alapú SVG útvonalnézetét NEM helyettesíti,
  * csak kiegészíti: az mindig, hálózat/API-kulcs nélkül is elérhető marad, ez a
- * képernyő csak a natív Android appban, window.AndroidMaps.openJourneyMap()-en
+ * képernyő csak a natív Android appban, window.AndroidMaps.openJourneysMap()-en
  * keresztül nyílik meg (ld. MapsBridge.kt).
  *
- * A [JourneyMapDataStore]-ból olvassa ki a megjelenítendő túra pontjait/nevét, majd a
+ * A [JourneyMapDataStore]-ból olvassa ki a megjelenítendő túra(ák) pontjait/nevét — a store
+ * egy LISTÁnyi bejegyzést ad vissza, hiszen egyszerre több túra is megjeleníthető (pl. a
+ * webes app ÚTVONALAK al-fülének "Összes út" nézete), majd a
  * [MapsUsageStore] önmaga által számolt havi térkép-betöltési keretét ellenőrzi: ha a
  * keret 5% alá csökkent és a felhasználó ebben a hónapban még nem oldotta fel kézzel,
  * egy teljes képernyős "lezárt" állapotot mutat a térkép helyett (a SupportMapFragment
@@ -52,7 +54,7 @@ import com.google.android.gms.maps.model.PolylineOptions
  */
 class JourneyMapActivity : FragmentActivity() {
 
-    private var pendingJourney: JourneyMapDataStore.PendingJourney? = null
+    private var pendingJourneys: List<JourneyMapDataStore.JourneyEntry>? = null
 
     private lateinit var topOverlay: LinearLayout
     private lateinit var journeyNameText: TextView
@@ -65,13 +67,13 @@ class JourneyMapActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_journey_map)
 
-        val journey = JourneyMapDataStore.readPending(this)
-        if (journey == null) {
+        val journeys = JourneyMapDataStore.readPending(this)
+        if (journeys == null) {
             Toast.makeText(this, R.string.journeyMapNoJourney, Toast.LENGTH_SHORT).show()
             finish()
             return
         }
-        pendingJourney = journey
+        pendingJourneys = journeys
 
         topOverlay = findViewById(R.id.top_overlay)
         journeyNameText = findViewById(R.id.journey_name_text)
@@ -80,7 +82,11 @@ class JourneyMapActivity : FragmentActivity() {
         lockedOverlay = findViewById(R.id.locked_overlay)
         lockedMessage = findViewById(R.id.locked_message)
 
-        journeyNameText.text = journey.name
+        journeyNameText.text = if (journeys.size == 1) {
+            journeys.first().name
+        } else {
+            getString(R.string.journeyMapMultipleJourneysFormat, journeys.size)
+        }
 
         findViewById<ImageButton>(R.id.close_button).setOnClickListener { finish() }
         findViewById<ImageButton>(R.id.settings_button).setOnClickListener { showBudgetDialog() }
@@ -125,8 +131,8 @@ class JourneyMapActivity : FragmentActivity() {
         topOverlay.visibility = View.VISIBLE
         updateUsageBar(usage)
 
-        val points = pendingJourney?.points ?: return
-        if (points.isEmpty()) return
+        val journeys = pendingJourneys ?: return
+        if (journeys.isEmpty()) return
 
         val existing = supportFragmentManager.findFragmentById(R.id.map_container) as? SupportMapFragment
         val mapFragment = existing ?: SupportMapFragment.newInstance().also { fragment ->
@@ -134,44 +140,56 @@ class JourneyMapActivity : FragmentActivity() {
                 .replace(R.id.map_container, fragment)
                 .commitNow()
         }
-        mapFragment.getMapAsync { googleMap -> setupMap(googleMap, points) }
+        mapFragment.getMapAsync { googleMap -> setupMap(googleMap, journeys) }
     }
 
-    private fun setupMap(map: GoogleMap, points: List<LatLng>) {
-        if (points.size > 1) {
-            map.addPolyline(
-                PolylineOptions()
-                    .addAll(points)
-                    .color(ContextCompat.getColor(this, R.color.journeyMapGold))
-                    .width(8f)
-            )
-        }
-        map.addMarker(
-            MarkerOptions()
-                .position(points.first())
-                .title("Rajt")
-                .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_GREEN))
-        )
-        if (points.size > 1) {
+    /** Egy útvonal-szín/kezdőmarker-szín per bejegyzés, index szerint ciklikusan — ld.
+     *  ROUTE_COLORS / START_MARKER_HUES. A végpont (Cél) mindenhol egységesen piros marad,
+     *  ugyanaz a "piros = cél" szemantika, mint az SVG nézet tinta-színű végpontjánál. */
+    private fun setupMap(map: GoogleMap, journeys: List<JourneyMapDataStore.JourneyEntry>) {
+        journeys.forEachIndexed { index, entry ->
+            val points = entry.points
+            if (points.isEmpty()) return@forEachIndexed
+            val routeColor = ContextCompat.getColor(this, ROUTE_COLORS[index % ROUTE_COLORS.size])
+            if (points.size > 1) {
+                map.addPolyline(
+                    PolylineOptions()
+                        .addAll(points)
+                        .color(routeColor)
+                        .width(8f)
+                )
+            }
             map.addMarker(
                 MarkerOptions()
-                    .position(points.last())
-                    .title("Cél")
-                    .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_RED))
+                    .position(points.first())
+                    .title("Rajt")
+                    .icon(BitmapDescriptorFactory.defaultMarker(START_MARKER_HUES[index % START_MARKER_HUES.size]))
             )
+            if (points.size > 1) {
+                map.addMarker(
+                    MarkerOptions()
+                        .position(points.last())
+                        .title("Cél")
+                        .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_RED))
+                )
+            }
         }
 
         // Csak a SIKERES renderelés (csempék ténylegesen betöltve) UTÁN számoljuk el a
         // betöltést - ez az egyetlen pillanat, ami valóban megfelel annak, hogy
-        // "renderáltunk egy térképet".
+        // "renderáltunk egy térképet". Egyetlen betöltés számít el, függetlenül attól,
+        // hány túra/útvonal rajzolódott ki - a "betöltés" a térkép-render eseménye, nem
+        // útvonalanként ismétlődik.
         map.setOnMapLoadedCallback {
-            fitCameraToRoute(map, points)
+            val allPoints = journeys.flatMap { it.points }
+            fitCameraToRoutes(map, allPoints)
             MapsUsageStore.recordLoad(this)
             refreshUsageBar()
         }
     }
 
-    private fun fitCameraToRoute(map: GoogleMap, points: List<LatLng>) {
+    private fun fitCameraToRoutes(map: GoogleMap, points: List<LatLng>) {
+        if (points.isEmpty()) return
         if (points.size <= 1) {
             map.moveCamera(CameraUpdateFactory.newLatLngZoom(points.first(), SINGLE_POINT_ZOOM))
             return
@@ -256,5 +274,29 @@ class JourneyMapActivity : FragmentActivity() {
         // Kb. 11 méter szélesség/magasság az egyenlítőnél - ennél kisebb doboz "gyakorlatilag
         // egyetlen pont"-nak számít a kamera-illesztés szempontjából.
         private const val MIN_BOUNDS_SPAN_DEGREES = 0.0001
+
+        // Ugyanaz az 5 útvonal-szín, ugyanabban a sorrendben, mint a webes app
+        // renderRouteSvg()-jének colors tömbje (index.html) - index szerint ciklikusan
+        // választva, hogy több egyidejűleg mutatott túra vizuálisan megkülönböztethető
+        // legyen, és a natív/webes nézet összhangban maradjon.
+        private val ROUTE_COLORS = intArrayOf(
+            R.color.journeyMapRoute1,
+            R.color.journeyMapRoute2,
+            R.color.journeyMapRoute3,
+            R.color.journeyMapRoute4,
+            R.color.journeyMapRoute5
+        )
+
+        // Kezdő (Rajt) marker árnyalat túránként, index szerint ciklikusan - a Cél marker
+        // ezzel szemben MINDIG HUE_RED marad minden túránál (ld. setupMap), ugyanazt az
+        // "piros = cél" mentális modellt követve, mint amit az SVG nézet tinta-színű
+        // végpontja már megalapozott.
+        private val START_MARKER_HUES = floatArrayOf(
+            BitmapDescriptorFactory.HUE_GREEN,
+            BitmapDescriptorFactory.HUE_YELLOW,
+            BitmapDescriptorFactory.HUE_ORANGE,
+            BitmapDescriptorFactory.HUE_AZURE,
+            BitmapDescriptorFactory.HUE_VIOLET
+        )
     }
 }
