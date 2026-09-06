@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.1';
+const APP_VERSION = '2.2.2';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.1';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.2';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -2386,17 +2386,21 @@ function renderJourneysView(c){
         <span style="font-size:18px;">🥾</span>
         <div class="row-main"><div class="row-title" style="font-size:14px;">${escapeHtml(j.name)}</div>
         <div class="row-sub">${fmtDateHu(j.date)} · ${(j.distanceKm||0).toFixed(1)} km · ${fmtDuration(j.durationMin)}</div></div>
+        ${(j.points&&j.points.length>1) ? `<button class="iconbtn" data-edit-journey-id="${escapeHtml(j.id)}" title="Útvonal javítása">✏️</button>` : ''}
         ${androidMapsAvailable() ? `<button class="iconbtn" data-native-map-id="${escapeHtml(j.id)}" title="Natív térkép">🗺️</button>` : ''}
         <span class="g" onclick="event.stopPropagation();deleteJourney('${j.id}')">🗑️</span>
       </div>`).join('') : `<div class="empty"><div class="ic">🥾</div><div class="t">Még nincs mentett túra</div><div class="d">Indíts egy követést a TRACK fülön.</div></div>`}
   </div>`;
-  /* Ez a gomb NEM a globális [data-click] delegálást használja: a sor saját
+  /* Ezek a gombok NEM a globális [data-click] delegálást használják: a sor saját
      onclick-je (navigáció) elé event.stopPropagation()-t kell tennünk, ami
      viszont a document-ig bubbleoló globális listenert is elvágná — ezért
      itt (a kampany [data-rpg-json] mintájához hasonlóan) közvetlenül a
      rendereléskor bekötött, hatókörre szűkített listenert használunk. */
   c.querySelectorAll('[data-native-map-id]').forEach(el=>{
     el.addEventListener('click', (e)=>{ e.stopPropagation(); openJourneyNativeMap(el.dataset.nativeMapId); });
+  });
+  c.querySelectorAll('[data-edit-journey-id]').forEach(el=>{
+    el.addEventListener('click', (e)=>{ e.stopPropagation(); openJourneyEditor(el.dataset.editJourneyId); });
   });
 }
 function renderTerkepContentWithTabs(){ RENDERERS.terkep(); }
@@ -2473,6 +2477,200 @@ function renderRouteSvg(journeys){
   svg += `</svg>`;
   const legend = withPts.map((j,i)=>`<div class="flex gap8 center" style="margin-top:7px;"><span class="dot" style="background:${colors[i%colors.length]}"></span><span class="small">${escapeHtml(j.name)} · ${(j.distanceKm||0).toFixed(1)} km</span></div>`).join('');
   return svg + `<div style="margin-top:10px;">${legend}</div><div class="small g" style="margin-top:10px;">Saját rajzolt útvonalnézet, utcatérkép-csempék nélkül — ez mindig betölt, hálózati/CSP-korlátozástól függetlenül. Valódi utcatérkép a natív Android verzióval jön.</div>`;
+}
+
+/* ================= ÚTVONAL-JAVÍTÓ (kézi GPS-pont korrekció) =================
+   Ha a GPS rosszul trackelt (kiugró pont, hurok, hiányzó szakasz), itt
+   javítható: pontok húzása/áthelyezése, törlése, új pont felvétele egy
+   koppintással. A munkapéldány (_journeyEditDraft) NEM az App.state-ben él -
+   csak Mentéskor írjuk vissza a kiválasztott túra points tömbjét és újra-
+   számoljuk a distanceKm-et (haversine() - ld. fent), Mégsénél/backdrop-
+   zárásnál egyszerűen eldobjuk. Ugyanaz a saját, csempementes SVG-vetítés,
+   mint renderRouteSvg()-ben (ne törd össze az ottani, már auditált nézetet -
+   ezért külön, saját projekcióval dolgozik, nem megosztott kóddal). */
+let _journeyEditDraft = null;
+function openJourneyEditor(id){
+  const j = App.state.journeys.find(x=>x.id===id);
+  if(!j || !Array.isArray(j.points) || j.points.length<2) return;
+  _journeyEditDraft = { journeyId:id, points:j.points.map(p=>({lat:p.lat,lng:p.lng})), selectedIndex:null, insertMode:false, dragIndex:null, proj:null, unproj:null, W:320, H:300 };
+  renderJourneyEditSheet();
+}
+function closeJourneyEditor(){ _journeyEditDraft=null; closeSheet(); }
+function journeyEditorProjection(points){
+  let minLat=90,maxLat=-90,minLng=180,maxLng=-180;
+  points.forEach(p=>{ if(p.lat<minLat)minLat=p.lat; if(p.lat>maxLat)maxLat=p.lat; if(p.lng<minLng)minLng=p.lng; if(p.lng>maxLng)maxLng=p.lng; });
+  const spanLat=(maxLat-minLat)||0.004, spanLng=(maxLng-minLng)||0.004;
+  minLat-=spanLat*0.15; maxLat+=spanLat*0.15; minLng-=spanLng*0.15; maxLng+=spanLng*0.15;
+  const latSpan=(maxLat-minLat)||0.0001, lngSpan=(maxLng-minLng)||0.0001;
+  const W=320,H=300;
+  return {
+    W,H,
+    proj:(p)=>[ ((p.lng-minLng)/lngSpan)*W, H-((p.lat-minLat)/latSpan)*H ],
+    unproj:(x,y)=>({ lat: minLat+((H-y)/H)*latSpan, lng: minLng+(x/W)*lngSpan })
+  };
+}
+function journeyEditorPathD(pts){
+  return pts.map((p,i)=>(i===0?'M':'L')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+}
+function renderJourneyEditSheet(){
+  const d = _journeyEditDraft; if(!d) return;
+  const pr = journeyEditorProjection(d.points);
+  d.proj=pr.proj; d.unproj=pr.unproj; d.W=pr.W; d.H=pr.H;
+  const pts = d.points.map(d.proj);
+  const pathD = journeyEditorPathD(pts);
+  let circles = '';
+  pts.forEach((p,i)=>{
+    const isSel = d.selectedIndex===i;
+    const isStart = i===0, isEnd = i===pts.length-1;
+    const r = isSel ? 9 : (isStart||isEnd ? 5 : 3.2);
+    const fill = isSel ? 'var(--trail-yellow)' : (isStart ? 'var(--trail-green)' : (isEnd ? 'var(--ink)' : 'var(--muted)'));
+    const strokeAttr = (isSel||isEnd) ? `stroke="var(--paper)" stroke-width="2"` : '';
+    circles += `<circle data-pt-idx="${i}" cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="${r}" fill="${fill}" ${strokeAttr}/>`;
+  });
+  const canDelete = d.selectedIndex!=null && d.points.length>2;
+  const hint = d.insertMode
+    ? 'Koppints az útvonalra, ahova az új pontot fel szeretnéd venni.'
+    : (d.selectedIndex!=null
+        ? `${d.selectedIndex+1}. / ${d.points.length}. pont kijelölve — húzással áthelyezheted.`
+        : 'Koppints egy pontra a kijelöléshez és húzáshoz.');
+  openSheet(`
+    <div class="sheet-head"><div class="sheet-title">🥾 Útvonal javítása</div><button class="iconbtn" onclick="closeJourneyEditor()">✕</button></div>
+    <svg id="journey-edit-svg" viewBox="0 0 ${d.W} ${d.H}" width="100%" style="display:block;touch-action:none;border-radius:10px;background:var(--surface-2);">
+      <g stroke="#2C3830" stroke-width="1">
+        ${[1,2,3,4].map(i=>{const gx=(d.W/5*i).toFixed(1); return `<line x1="${gx}" y1="0" x2="${gx}" y2="${d.H}"/>`;}).join('')}
+        ${[1,2,3].map(i=>{const gy=(d.H/4*i).toFixed(1); return `<line x1="0" y1="${gy}" x2="${d.W}" y2="${gy}"/>`;}).join('')}
+      </g>
+      <path id="journey-edit-path" d="${pathD}" fill="none" stroke="var(--trail-yellow)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      ${circles}
+    </svg>
+    <div class="small muted" style="margin-top:8px;">${hint}</div>
+    <div class="chiprow" style="margin-top:10px;">
+      <div class="chip ${d.insertMode?'active':''}" onclick="journeyEditorToggleInsertMode()">➕ Pont felvétele</div>
+      <div class="chip" onclick="journeyEditorReset()">↺ Visszaállítás</div>
+    </div>
+    <button class="btn btn-danger btn-block" style="margin-top:12px;${canDelete?'':'opacity:0.35;cursor:not-allowed;'}" ${canDelete?'':'disabled'} onclick="journeyEditorDeleteSelected()">🗑️ Kijelölt pont törlése</button>
+    <div class="flex gap8" style="margin-top:12px;">
+      <button class="btn btn-ghost btn-block" onclick="closeJourneyEditor()">Mégse</button>
+      <button class="btn btn-primary btn-block" onclick="journeyEditorSave()">Mentés</button>
+    </div>
+  `);
+  journeyEditorBindSvgEvents();
+}
+function journeyEditorToggleInsertMode(){
+  const d=_journeyEditDraft; if(!d) return;
+  d.insertMode = !d.insertMode;
+  d.selectedIndex = null;
+  renderJourneyEditSheet();
+}
+function journeyEditorReset(){
+  const d=_journeyEditDraft; if(!d) return;
+  const j = App.state.journeys.find(x=>x.id===d.journeyId);
+  if(!j) return;
+  d.points = j.points.map(p=>({lat:p.lat,lng:p.lng}));
+  d.selectedIndex=null; d.insertMode=false;
+  renderJourneyEditSheet();
+}
+function journeyEditorDeleteSelected(){
+  const d=_journeyEditDraft; if(!d || d.selectedIndex==null || d.points.length<=2) return;
+  d.points.splice(d.selectedIndex,1);
+  d.selectedIndex=null;
+  renderJourneyEditSheet();
+}
+function journeyEditorSave(){
+  const d=_journeyEditDraft; if(!d) return;
+  if(d.points.length<2){ toast('Legalább 2 pont szükséges'); return; }
+  const j = App.state.journeys.find(x=>x.id===d.journeyId);
+  if(!j){ closeJourneyEditor(); return; }
+  j.points = d.points.map(p=>({lat:p.lat,lng:p.lng}));
+  let totalM=0;
+  for(let i=1;i<j.points.length;i++) totalM += haversine(j.points[i-1], j.points[i]);
+  j.distanceKm = totalM/1000;
+  saveState();
+  _journeyEditDraft = null;
+  closeSheet();
+  toast('Útvonal frissítve');
+  RENDERERS.terkep();
+}
+function svgEventPoint(svg, evt, W, H){
+  const rect = svg.getBoundingClientRect();
+  const scaleX = rect.width>0 ? W/rect.width : 1;
+  const scaleY = rect.height>0 ? H/rect.height : 1;
+  return [ (evt.clientX-rect.left)*scaleX, (evt.clientY-rect.top)*scaleY ];
+}
+function journeyEditorNearestPointIndex(pts, x, y, maxDistSq){
+  let best=-1, bestD=maxDistSq;
+  pts.forEach((p,i)=>{ const dx=p[0]-x, dy=p[1]-y, dd=dx*dx+dy*dy; if(dd<=bestD){ bestD=dd; best=i; } });
+  return best;
+}
+function journeyEditorNearestSegmentIndex(pts, x, y){
+  let best=-1, bestD=Infinity;
+  for(let i=0;i<pts.length-1;i++){
+    const x1=pts[i][0], y1=pts[i][1], x2=pts[i+1][0], y2=pts[i+1][1];
+    const dx=x2-x1, dy=y2-y1, lenSq=dx*dx+dy*dy;
+    let t = lenSq>0 ? ((x-x1)*dx+(y-y1)*dy)/lenSq : 0;
+    t = Math.max(0,Math.min(1,t));
+    const px=x1+t*dx, py=y1+t*dy;
+    const dd=(x-px)*(x-px)+(y-py)*(y-py);
+    if(dd<bestD){ bestD=dd; best=i; }
+  }
+  return best;
+}
+/* Húzás közben (pointermove) NEM hívunk teljes renderJourneyEditSheet()-et -
+   az openSheet() minden hívásnál lecseréli a #sheet innerHTML-jét, ami a
+   folyamatban lévő pointer-capture-t tartó svg elemet is megsemmisítené és
+   megszakítaná a húzást. Ehelyett a húzás alatt közvetlenül a kör/path DOM
+   attribútumait módosítjuk, és csak pointerup/pointercancel után (amikor a
+   gesztus már lezárult) hívunk teljes újrarajzolást. */
+function journeyEditorBindSvgEvents(){
+  const d = _journeyEditDraft; if(!d) return;
+  const svg = document.getElementById('journey-edit-svg'); if(!svg) return;
+  svg.addEventListener('pointerdown', (evt)=>{
+    evt.preventDefault();
+    const [x,y] = svgEventPoint(svg, evt, d.W, d.H);
+    const pts = d.points.map(d.proj);
+    if(d.insertMode){
+      const afterIdx = journeyEditorNearestSegmentIndex(pts, x, y);
+      if(afterIdx===-1) return;
+      d.points.splice(afterIdx+1, 0, d.unproj(x,y));
+      d.insertMode = false;
+      d.selectedIndex = afterIdx+1;
+      renderJourneyEditSheet();
+      return;
+    }
+    const hitRadiusSq = Math.pow(d.W*0.06, 2);
+    const idx = journeyEditorNearestPointIndex(pts, x, y, hitRadiusSq);
+    if(idx===-1){
+      d.selectedIndex = null;
+      renderJourneyEditSheet();
+      return;
+    }
+    d.selectedIndex = idx;
+    d.dragIndex = idx;
+    svg.setPointerCapture(evt.pointerId);
+    const circleEl = svg.querySelector(`[data-pt-idx="${idx}"]`);
+    if(circleEl){ circleEl.setAttribute('r','9'); circleEl.setAttribute('fill','var(--trail-yellow)'); circleEl.setAttribute('stroke','var(--paper)'); circleEl.setAttribute('stroke-width','2'); }
+  });
+  svg.addEventListener('pointermove', (evt)=>{
+    if(d.dragIndex==null) return;
+    evt.preventDefault();
+    const [x,y] = svgEventPoint(svg, evt, d.W, d.H);
+    const circleEl = svg.querySelector(`[data-pt-idx="${d.dragIndex}"]`);
+    if(circleEl){ circleEl.setAttribute('cx', x.toFixed(1)); circleEl.setAttribute('cy', y.toFixed(1)); }
+    const livePts = d.points.map(d.proj);
+    livePts[d.dragIndex] = [x,y];
+    const pathEl = svg.querySelector('#journey-edit-path');
+    if(pathEl) pathEl.setAttribute('d', journeyEditorPathD(livePts));
+  });
+  const commitDrag = (evt)=>{
+    if(d.dragIndex==null) return;
+    const [x,y] = svgEventPoint(svg, evt, d.W, d.H);
+    d.points[d.dragIndex] = d.unproj(x,y);
+    d.dragIndex = null;
+    try{ svg.releasePointerCapture(evt.pointerId); }catch(e){}
+    renderJourneyEditSheet();
+  };
+  svg.addEventListener('pointerup', commitDrag);
+  svg.addEventListener('pointercancel', commitDrag);
 }
 /*__VIEW_TERKEP__*/
 /* ================= VIEW: AI (MotivAI chat) ================= */
