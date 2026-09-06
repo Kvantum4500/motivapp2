@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.View
 import android.webkit.GeolocationPermissions
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -17,10 +18,13 @@ import android.webkit.WebChromeClient.FileChooserParams
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.MapView
 
 /**
  * The app's launcher entry point (replacing the Bubblewrap-generated LauncherActivity,
@@ -37,6 +41,27 @@ import androidx.core.content.ContextCompat
  * Életkampány/RPG feature) and [MapsBridge] as `window.AndroidMaps` (opens
  * [JourneyMapActivity], a native real-map-tiles view of a recorded hike, gated by
  * [MapsUsageStore]'s self-tracked monthly load budget) are wired the same way.
+ *
+ * On top of that, this Activity also hosts a second, embedded native map surface for
+ * the web app's ÚTVONALAK (routes) sub-tab: a plain WebView cannot render a real
+ * Google Map "inside" its own HTML, so [embeddedMapView] (a [MapView], NOT a
+ * SupportMapFragment - its LayoutParams need to be repositioned directly and on
+ * demand, which a Fragment-hosted map would make awkward) is added as a SECOND,
+ * initially invisible/zero-size sibling of [webView] inside a [FrameLayout] content
+ * root, added after (so drawn on top of) the WebView. [MapsBridge] then drives it via
+ * `window.AndroidMaps.showEmbeddedMap`/`updateEmbeddedMapRect`/`hideEmbeddedMap`/
+ * `isMapEmbedLocked`/`requestEmbeddedMapUnlock`: the web side reads
+ * `getBoundingClientRect()` on the existing `#route-map-slot` SVG-route card and keeps
+ * pushing that rectangle (in device pixels) to `updateEmbeddedMapRect`, so the native
+ * MapView visually tracks and exactly overlaps that HTML element as the page scrolls/
+ * resizes - it never replaces the underlying SVG route view in the DOM, it is a pure
+ * visual overlay on top of it, so any embed failure (no Play services, budget-locked,
+ * a positioning bug) still leaves the always-available offline SVG view intact
+ * underneath. Route/marker drawing and camera-fitting for this overlay reuse the exact
+ * same [MapRouteRenderer] the full-screen [JourneyMapActivity] uses. Because a plain
+ * View-based MapView (not a Fragment) is used, this Activity itself must forward every
+ * relevant lifecycle callback to it (onCreate/onStart/onResume/onPause/onStop/
+ * onDestroy/onLowMemory/onSaveInstanceState) - see the overrides below.
  *
  * Base class is androidx.activity.ComponentActivity, NOT plain android.app.Activity:
  * registerForActivityResult (used below for the geolocation prompt, the file chooser,
@@ -55,6 +80,14 @@ class MainWebViewActivity : ComponentActivity() {
     private lateinit var webView: WebView
     private lateinit var nativeBridge: NativeBridge
     private lateinit var healthConnectBridge: HealthConnectBridge
+
+    // Embedded map overlay (see class doc comment above) - accessed from MapsBridge too
+    // (same package), hence not `private`. embeddedGoogleMap stays null until
+    // ensureEmbeddedGoogleMap()'s first getMapAsync callback resolves.
+    internal lateinit var embeddedMapView: MapView
+    internal var embeddedGoogleMap: GoogleMap? = null
+    private var embeddedMapAsyncStarted = false
+    private val embeddedMapPendingCallbacks = mutableListOf<(GoogleMap) -> Unit>()
 
     private var pendingGeoOrigin: String? = null
     private var pendingGeoCallback: GeolocationPermissions.Callback? = null
@@ -118,7 +151,33 @@ class MainWebViewActivity : ComponentActivity() {
         }
 
         webView = WebView(this)
-        setContentView(webView)
+
+        // The embedded map overlay (see class doc comment) - created here but kept
+        // invisible/zero-size until MapsBridge.showEmbeddedMap()/updateEmbeddedMapRect()
+        // actually position it; MapView.onCreate() must be forwarded right away
+        // regardless of visibility, same as any other lifecycle callback below.
+        embeddedMapView = MapView(this)
+        embeddedMapView.onCreate(savedInstanceState)
+        embeddedMapView.visibility = View.GONE
+        // A small, standard, low-risk nudge for the WebView/MapView hardware-accelerated
+        // overlap scenario (two independently composited surfaces sharing one window):
+        // giving the overlay an explicit elevation makes its draw order/layer
+        // unambiguous to the framework instead of relying purely on two same-elevation
+        // siblings' add-order. This is NOT a substitute for a real-device check - see
+        // MapsBridge.kt / the PR notes for why that check is still required.
+        embeddedMapView.elevation = 8f
+
+        // FrameLayout content root: webView first (full-size, bottom layer), then
+        // embeddedMapView second (added AFTER => drawn ON TOP of the WebView) - this is
+        // what lets the native MapView visually sit "inside" the web page's content
+        // (see class doc comment above for the full mechanism).
+        val contentRoot = FrameLayout(this)
+        contentRoot.addView(
+            webView,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        )
+        contentRoot.addView(embeddedMapView, FrameLayout.LayoutParams(0, 0))
+        setContentView(contentRoot)
 
         // Standard sane settings for a PWA: JS + DOM storage so localStorage (the API
         // key, MotivAI state, draft autosave) and the sw.js service worker registration
@@ -238,7 +297,7 @@ class MainWebViewActivity : ComponentActivity() {
         // app start; RpgStreakWorker itself no-ops if the RPG feature was never used.
         RpgStreakScheduler.schedule(applicationContext)
 
-        webView.addJavascriptInterface(MapsBridge(this), "AndroidMaps")
+        webView.addJavascriptInterface(MapsBridge(this, webView), "AndroidMaps")
 
         webView.loadUrl(LAUNCH_URL)
 
@@ -246,8 +305,14 @@ class MainWebViewActivity : ComponentActivity() {
         checkPendingNotifications()
     }
 
+    override fun onStart() {
+        super.onStart()
+        embeddedMapView.onStart()
+    }
+
     override fun onResume() {
         super.onResume()
+        embeddedMapView.onResume()
         val filter = IntentFilter(NotificationForwarderService.ACTION_PENDING_NOTIFICATION_UPDATED)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(pendingNotificationReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -261,6 +326,7 @@ class MainWebViewActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
+        embeddedMapView.onPause()
         try {
             unregisterReceiver(pendingNotificationReceiver)
         } catch (e: IllegalArgumentException) {
@@ -269,9 +335,48 @@ class MainWebViewActivity : ComponentActivity() {
         }
     }
 
+    override fun onStop() {
+        embeddedMapView.onStop()
+        super.onStop()
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        embeddedMapView.onLowMemory()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        embeddedMapView.onSaveInstanceState(outState)
+    }
+
     override fun onDestroy() {
         healthConnectBridge.cancel()
+        embeddedMapView.onDestroy()
         super.onDestroy()
+    }
+
+    /** Lazily fetches (once) and caches the embedded overlay's [GoogleMap] - called from
+     *  [MapsBridge.showEmbeddedMap], never eagerly from onCreate, so Maps rendering is
+     *  never initialized before the user has actually scrolled to a view that embeds it.
+     *  Safe to call repeatedly/concurrently before the first callback resolves: extra
+     *  callers are queued and all invoked once, in order, when the map becomes ready. */
+    internal fun ensureEmbeddedGoogleMap(callback: (GoogleMap) -> Unit) {
+        val existing = embeddedGoogleMap
+        if (existing != null) {
+            callback(existing)
+            return
+        }
+        embeddedMapPendingCallbacks.add(callback)
+        if (!embeddedMapAsyncStarted) {
+            embeddedMapAsyncStarted = true
+            embeddedMapView.getMapAsync { googleMap ->
+                embeddedGoogleMap = googleMap
+                val pending = embeddedMapPendingCallbacks.toList()
+                embeddedMapPendingCallbacks.clear()
+                pending.forEach { it(googleMap) }
+            }
+        }
     }
 
     /** Called on the UI thread from onCreate/onResume and from

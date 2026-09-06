@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.1.9';
+const APP_VERSION = '2.2.0';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.1.9';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.0';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -785,17 +785,20 @@ const TOP_TABS = ['ma','fejlodes','terkep','schedule','finance','tovabb'];
 const SUB_VIEWS = ['ai','nutrition','achievements','settings','integrations','profile','kampany'];
 
 function setTab(tab){
+  hideNativeMapEmbed();
   App.ui.tab = tab;
   App.ui.activeSub = null;
   renderApp();
   document.getElementById('view-root').scrollTop = 0;
 }
 function openSub(viewId){
+  hideNativeMapEmbed();
   App.ui.activeSub = viewId;
   renderApp();
   document.getElementById('view-root').scrollTop = 0;
 }
 function closeSub(){
+  hideNativeMapEmbed();
   App.ui.activeSub = null;
   renderApp();
 }
@@ -2189,7 +2192,7 @@ RENDERERS.terkep = function(){
   `;
   renderTerkepContent();
 };
-function setTerkepView(v){ App.ui.terkepView=v; RENDERERS.terkep(); }
+function setTerkepView(v){ hideNativeMapEmbed(); App.ui.terkepView=v; RENDERERS.terkep(); }
 function renderTerkepContent(){
   const c = document.getElementById('terkep-content');
   if(!c) return;
@@ -2416,16 +2419,28 @@ function renderMapView(c){
   const journeys = App.state.journeys;
   const toShow = App.ui.selectedJourney ? journeys.filter(j=>j.id===App.ui.selectedJourney) : journeys;
   const hasRoutes = toShow.some(j=>j.points && j.points.length>1);
+  const embedLocked = androidMapsAvailable() && window.AndroidMaps.isMapEmbedLocked();
   c.innerHTML = `
-    ${androidMapsAvailable() && hasRoutes ? `<button class="btn btn-secondary btn-block" id="native-map-all-btn" style="margin-bottom:10px;">🗺️ Megnyitás valódi térképen</button>` : ''}
-    <div class="card" style="padding:14px;">${renderRouteSvg(toShow)}</div>
+    ${embedLocked ? `<div class="small muted" style="margin-bottom:10px;">🔒 A havi natív térkép-keret elfogyott. <a href="#" id="embedded-map-unlock-link" onclick="event.preventDefault();requestEmbeddedMapUnlock();">Feloldás erre a hónapra</a></div>` : ''}
+    <div class="card" id="route-map-slot" style="padding:14px;">${renderRouteSvg(toShow)}</div>
     <div class="chiprow">
       <div class="chip ${!App.ui.selectedJourney?'active':''}" onclick="selectMapJourney(null)">Összes út</div>
       ${journeys.map(j=>`<div class="chip ${App.ui.selectedJourney===j.id?'active':''}" onclick="selectMapJourney('${j.id}')">${escapeHtml(j.name)}</div>`).join('')}
     </div>
   `;
-  const btn = document.getElementById('native-map-all-btn');
-  if(btn) btn.addEventListener('click', ()=> openJourneysNativeMap(toShow));
+  /* A valódi Google Map itt automatikusan, gombnyomás nélkül ágyazódik be a fenti
+     #route-map-slot kártya HELYÉRE (natív overlay, ld. showNativeMapEmbed doksi lent) -
+     ez a mostani nézetet a manuális "Megnyitás valódi térképen" gomb korábbi
+     változatánál helyettesíti; a TÚRÁK lista (renderJourneysView) per-túra 🗺️ gombja és
+     a teljes képernyős natív nézete EZZEL ÉRINTETLEN, teljesen más funkció marad.
+     Elébb mindig elrejtjük az esetleg már látszó overlay-t (pl. selectMapJourney() ezt a
+     függvényt hívja újra ugyanazon a nézeten maradva) - egy korábbi híváskor kirajzolt
+     overlay soha ne maradhasson a képernyőn, ha az új kiválasztásnak épp nincs útvonala /
+     időközben lezárt lett a keret. */
+  hideNativeMapEmbed();
+  if(androidMapsAvailable() && hasRoutes && !embedLocked){
+    showNativeMapEmbed(toShow);
+  }
 }
 function selectMapJourney(id){ App.ui.selectedJourney = App.ui.selectedJourney===id? null : id; renderMapView(document.getElementById('terkep-content')); }
 function renderRouteSvg(journeys){
@@ -4390,6 +4405,89 @@ function openJourneyNativeMap(id){
   if(!j) return;
   openJourneysNativeMap([j]);
 }
+
+/* ---- Beágyazott natív térkép (ÚTVONALAK al-fül, window.AndroidMaps.showEmbeddedMap/
+   updateEmbeddedMapRect/hideEmbeddedMap/isMapEmbedLocked/requestEmbeddedMapUnlock, ld.
+   MapsBridge.kt) ----
+   A natív oldalon egy valódi Google MapView-t rétegez a WebView FÖLÉ (natív FrameLayout-
+   testvérként), pontosan a lenti #route-map-slot kártya képernyő-téglalapjára pozicionálva
+   - ld. MainWebViewActivity.kt osztály-doksija a teljes mechanizmusért. Ez a natív térkép
+   SOSE váltja le a #route-map-slot-ban lévő, mindig elérhető SVG útvonalnézetet a DOM-ban -
+   tisztán vizuális overlay fölötte -, tehát ha nincs natív híd (böngésző/TWA), ha a havi
+   keret lezárt, vagy ha bármi hiba történik beágyazás közben, a felhasználó pontosan
+   ugyanazt az SVG nézetet látja, mint eddig, teljesen érintetlenül. */
+let _embeddedMapSyncFn = null;
+/** renderMapView hívja meg, amikor androidMapsAvailable() && hasRoutes && nincs lezárva a
+ *  keret - elindítja a beágyazást ÉS a folyamatos pozíció-szinkronizálást. */
+function showNativeMapEmbed(toShow){
+  if(!androidMapsAvailable()) return;
+  const payload = (toShow||[]).filter(j=>j.points && j.points.length>1).map(j=>({name:j.name, points:j.points}));
+  if(!payload.length) return;
+  try{ window.AndroidMaps.showEmbeddedMap(JSON.stringify(payload)); }
+  catch(e){ return; } // hiba esetén az alatta lévő SVG nézet változatlanul látszik - ld. fenti doksi
+  syncEmbeddedMapRect();
+  if(_embeddedMapSyncFn){
+    window.removeEventListener('resize', _embeddedMapSyncFn);
+    const oldRoot = document.getElementById('view-root');
+    if(oldRoot) oldRoot.removeEventListener('scroll', _embeddedMapSyncFn);
+  }
+  _embeddedMapSyncFn = syncEmbeddedMapRect;
+  window.addEventListener('resize', _embeddedMapSyncFn);
+  const root = document.getElementById('view-root');
+  if(root) root.addEventListener('scroll', _embeddedMapSyncFn, {passive:true});
+}
+/** A #route-map-slot kártya AKTUÁLIS képernyő-téglalapját (CSS px -> eszköz px, ld.
+ *  devicePixelRatio szorzás ITT, a JS oldalon - a natív oldal emiatt már kész eszköz-
+ *  pixellel dolgozik, semmilyen egységátváltást nem kell végeznie) küldi át a natív
+ *  overlay-nek. Némán kilép, ha a slot elem épp nem létezik (pl. a felhasználó időközben
+ *  másik nézetre navigált - ilyenkor hideNativeMapEmbed már úgyis elrejtette az overlay-t). */
+function syncEmbeddedMapRect(){
+  if(!androidMapsAvailable()) return;
+  const slot = document.getElementById('route-map-slot');
+  if(!slot) return;
+  const r = slot.getBoundingClientRect();
+  const dpr = window.devicePixelRatio||1;
+  try{
+    window.AndroidMaps.updateEmbeddedMapRect(
+      Math.round(r.left*dpr), Math.round(r.top*dpr), Math.round(r.width*dpr), Math.round(r.height*dpr)
+    );
+  }catch(e){}
+}
+/** Minden olyan navigációs függvénynek (setTab/openSub/closeSub/setTerkepView) MEG KELL
+ *  hívnia ezt a legelső lépésként, mielőtt bármilyen App.ui állapotot módosítana - egy már
+ *  elrejtett overlay-en meghívva ártalmatlan no-op, tehát a "biztos, ami biztos, minden
+ *  navigációs úton hívjuk" a legkevésbé hibalehetőséges megközelítés (ld. index.html
+ *  feladat-doksija) - sose maradjon egy natív térkép-overlay a képernyőn ragadva rossz
+ *  tartalom fölött, ha egy navigációs útvonal lemaradna. */
+function hideNativeMapEmbed(){
+  if(_embeddedMapSyncFn){
+    window.removeEventListener('resize', _embeddedMapSyncFn);
+    const root = document.getElementById('view-root');
+    if(root) root.removeEventListener('scroll', _embeddedMapSyncFn);
+    _embeddedMapSyncFn = null;
+  }
+  if(androidMapsAvailable()){
+    try{ window.AndroidMaps.hideEmbeddedMap(); }catch(e){}
+  }
+}
+function requestEmbeddedMapUnlock(){
+  if(!androidMapsAvailable()) return;
+  try{ window.AndroidMaps.requestEmbeddedMapUnlock(); }catch(e){}
+}
+/* Natív -> JS visszahívás (ld. window.onAndroidHealthResult / window.onBankNotification
+   ugyanezen mintája) - a natív oldal a feloldás-megerősítő párbeszédablak IGEN gombja után
+   hívja meg. Csak akkor csinál bármit, ha a felhasználó továbbra is pontosan ezen a nézeten
+   van (Térkép tab, ÚTVONALAK al-fül) - egyébként a beágyazás újrapróbálása értelmetlen (és
+   akár egy már máshova navigált nézet fölé rajzolna vissza egy overlay-t). */
+window.onEmbeddedMapUnlocked = function(){
+  if(!(App.ui.tab==='terkep' && App.ui.terkepView==='map')) return;
+  const journeys = App.state.journeys;
+  const toShow = App.ui.selectedJourney ? journeys.filter(j=>j.id===App.ui.selectedJourney) : journeys;
+  const hasRoutes = toShow.some(j=>j.points && j.points.length>1);
+  if(androidMapsAvailable() && hasRoutes && !window.AndroidMaps.isMapEmbedLocked()){
+    renderTerkepContent(); // újrarendereli a nézetet, hogy a lezárt-üzenet is eltűnjön, majd beágyaz
+  }
+};
 
 /* ---- Segédfüggvények ---- */
 function rpgClamp(n,min,max){ return Math.max(min, Math.min(max,n)); }

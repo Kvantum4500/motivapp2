@@ -10,16 +10,9 @@ import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
-import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
-import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.SupportMapFragment
-import com.google.android.gms.maps.model.BitmapDescriptorFactory
-import com.google.android.gms.maps.model.LatLng
-import com.google.android.gms.maps.model.LatLngBounds
-import com.google.android.gms.maps.model.MarkerOptions
-import com.google.android.gms.maps.model.PolylineOptions
 
 /**
  * Natív, valódi térképcsempéken (Google Maps) rajzolt túra-nézet - a webes app
@@ -37,6 +30,12 @@ import com.google.android.gms.maps.model.PolylineOptions
  * ekkor egyáltalán nem jön létre - egyetlen csempekérés/betöltés sem történik). A
  * tényleges betöltést csak a sikeres térkép-renderelés UTÁN, a GoogleMap
  * setOnMapLoadedCallback-jában számoljuk el ([MapsUsageStore.recordLoad]).
+ *
+ * A tényleges "rajzold ki ezeket a túrákat" logika (útvonal-szín/marker-paletta,
+ * kamera-illesztés) [MapRouteRenderer]-ben él, KÖZÖS a
+ * [MapsBridge.showEmbeddedMap] által vezérelt, index.html ÚTVONALAK al-fülébe
+ * ágyazott natív térkép-overlay-jel - ez a képernyő már csak vékony wrappert hív rá
+ * (ld. setupMap lent), hogy egyetlen implementáció legyen mindkét belépési ponthoz.
  *
  * Base class: androidx.fragment.app.FragmentActivity, NEM plain androidx.activity.
  * ComponentActivity (mint a MainWebViewActivity) és NEM AppCompatActivity. Ennek a
@@ -143,37 +142,15 @@ class JourneyMapActivity : FragmentActivity() {
         mapFragment.getMapAsync { googleMap -> setupMap(googleMap, journeys) }
     }
 
-    /** Egy útvonal-szín/kezdőmarker-szín per bejegyzés, index szerint ciklikusan — ld.
-     *  ROUTE_COLORS / START_MARKER_HUES. A végpont (Cél) mindenhol egységesen piros marad,
-     *  ugyanaz a "piros = cél" szemantika, mint az SVG nézet tinta-színű végpontjánál. */
+    /** Vékony wrapper: a tényleges "rajzold ki ezeket a túrákat" logika (paletta-ciklikusság,
+     *  HUE_RED cél-marker, kamera-illesztés) most már a [MapRouteRenderer]-ben él - ugyanazt
+     *  hívja az embedded (index.html ÚTVONALAK al-fül) natív térkép-overlay is
+     *  ([MapsBridge.showEmbeddedMap]), hogy egyetlen implementáció legyen mindkét
+     *  belépési ponthoz. Ami itt marad, az kifejezetten ehhez a teljes képernyős
+     *  nézethez tartozik: a betöltés-számlálás ([MapsUsageStore.recordLoad]) és a
+     *  keret-sáv frissítése. */
     private fun setupMap(map: GoogleMap, journeys: List<JourneyMapDataStore.JourneyEntry>) {
-        journeys.forEachIndexed { index, entry ->
-            val points = entry.points
-            if (points.isEmpty()) return@forEachIndexed
-            val routeColor = ContextCompat.getColor(this, ROUTE_COLORS[index % ROUTE_COLORS.size])
-            if (points.size > 1) {
-                map.addPolyline(
-                    PolylineOptions()
-                        .addAll(points)
-                        .color(routeColor)
-                        .width(8f)
-                )
-            }
-            map.addMarker(
-                MarkerOptions()
-                    .position(points.first())
-                    .title("Rajt")
-                    .icon(BitmapDescriptorFactory.defaultMarker(START_MARKER_HUES[index % START_MARKER_HUES.size]))
-            )
-            if (points.size > 1) {
-                map.addMarker(
-                    MarkerOptions()
-                        .position(points.last())
-                        .title("Cél")
-                        .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_RED))
-                )
-            }
-        }
+        MapRouteRenderer.drawJourneys(this, map, journeys)
 
         // Csak a SIKERES renderelés (csempék ténylegesen betöltve) UTÁN számoljuk el a
         // betöltést - ez az egyetlen pillanat, ami valóban megfelel annak, hogy
@@ -182,45 +159,9 @@ class JourneyMapActivity : FragmentActivity() {
         // útvonalanként ismétlődik.
         map.setOnMapLoadedCallback {
             val allPoints = journeys.flatMap { it.points }
-            fitCameraToRoutes(map, allPoints)
+            MapRouteRenderer.fitCameraToRoutes(map, allPoints)
             MapsUsageStore.recordLoad(this)
             refreshUsageBar()
-        }
-    }
-
-    private fun fitCameraToRoutes(map: GoogleMap, points: List<LatLng>) {
-        if (points.isEmpty()) return
-        if (points.size <= 1) {
-            map.moveCamera(CameraUpdateFactory.newLatLngZoom(points.first(), SINGLE_POINT_ZOOM))
-            return
-        }
-        var minLat = 90.0
-        var maxLat = -90.0
-        var minLng = 180.0
-        var maxLng = -180.0
-        points.forEach { p ->
-            if (p.latitude < minLat) minLat = p.latitude
-            if (p.latitude > maxLat) maxLat = p.latitude
-            if (p.longitude < minLng) minLng = p.longitude
-            if (p.longitude > maxLng) maxLng = p.longitude
-        }
-        val latSpan = maxLat - minLat
-        val lngSpan = maxLng - minLng
-        // Nagyon apró (pl. álló helyben GPS-zajból adódó) útvonal-doboz egyes Maps SDK
-        // verziókon elhasalhat a newLatLngBounds hívásban (nulla/majdnem-nulla méretű
-        // bounds) - ilyenkor egyszerű pont+zoom kamera-mozgásra váltunk.
-        if (latSpan < MIN_BOUNDS_SPAN_DEGREES && lngSpan < MIN_BOUNDS_SPAN_DEGREES) {
-            val center = LatLng((minLat + maxLat) / 2, (minLng + maxLng) / 2)
-            map.moveCamera(CameraUpdateFactory.newLatLngZoom(center, SINGLE_POINT_ZOOM))
-            return
-        }
-        try {
-            val bounds = LatLngBounds.Builder().apply { points.forEach { include(it) } }.build()
-            map.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, CAMERA_PADDING_PX))
-        } catch (e: Exception) {
-            // Védekező tartalék, ha az SDK mégis elhasal (pl. a térkép nézete még nincs
-            // véglegesen kimérve) - egy útvonal se omlaszthassa össze a képernyőt.
-            map.moveCamera(CameraUpdateFactory.newLatLngZoom(points.first(), SINGLE_POINT_ZOOM))
         }
     }
 
@@ -266,37 +207,5 @@ class JourneyMapActivity : FragmentActivity() {
             params.width = (trackWidth * usedFraction).toInt().coerceAtLeast(0)
             usageBarFill.layoutParams = params
         }
-    }
-
-    companion object {
-        private const val SINGLE_POINT_ZOOM = 15f
-        private const val CAMERA_PADDING_PX = 96
-        // Kb. 11 méter szélesség/magasság az egyenlítőnél - ennél kisebb doboz "gyakorlatilag
-        // egyetlen pont"-nak számít a kamera-illesztés szempontjából.
-        private const val MIN_BOUNDS_SPAN_DEGREES = 0.0001
-
-        // Ugyanaz az 5 útvonal-szín, ugyanabban a sorrendben, mint a webes app
-        // renderRouteSvg()-jének colors tömbje (index.html) - index szerint ciklikusan
-        // választva, hogy több egyidejűleg mutatott túra vizuálisan megkülönböztethető
-        // legyen, és a natív/webes nézet összhangban maradjon.
-        private val ROUTE_COLORS = intArrayOf(
-            R.color.journeyMapRoute1,
-            R.color.journeyMapRoute2,
-            R.color.journeyMapRoute3,
-            R.color.journeyMapRoute4,
-            R.color.journeyMapRoute5
-        )
-
-        // Kezdő (Rajt) marker árnyalat túránként, index szerint ciklikusan - a Cél marker
-        // ezzel szemben MINDIG HUE_RED marad minden túránál (ld. setupMap), ugyanazt az
-        // "piros = cél" mentális modellt követve, mint amit az SVG nézet tinta-színű
-        // végpontja már megalapozott.
-        private val START_MARKER_HUES = floatArrayOf(
-            BitmapDescriptorFactory.HUE_GREEN,
-            BitmapDescriptorFactory.HUE_YELLOW,
-            BitmapDescriptorFactory.HUE_ORANGE,
-            BitmapDescriptorFactory.HUE_AZURE,
-            BitmapDescriptorFactory.HUE_VIOLET
-        )
     }
 }
