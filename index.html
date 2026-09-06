@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.2';
+const APP_VERSION = '2.2.3';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.2';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.3';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -2386,6 +2386,7 @@ function renderJourneysView(c){
         <span style="font-size:18px;">🥾</span>
         <div class="row-main"><div class="row-title" style="font-size:14px;">${escapeHtml(j.name)}</div>
         <div class="row-sub">${fmtDateHu(j.date)} · ${(j.distanceKm||0).toFixed(1)} km · ${fmtDuration(j.durationMin)}</div></div>
+        <button class="iconbtn" data-stats-journey-id="${escapeHtml(j.id)}" title="Részletek">📊</button>
         ${(j.points&&j.points.length>1) ? `<button class="iconbtn" data-edit-journey-id="${escapeHtml(j.id)}" title="Útvonal javítása">✏️</button>` : ''}
         ${androidMapsAvailable() ? `<button class="iconbtn" data-native-map-id="${escapeHtml(j.id)}" title="Natív térkép">🗺️</button>` : ''}
         <span class="g" onclick="event.stopPropagation();deleteJourney('${j.id}')">🗑️</span>
@@ -2396,6 +2397,9 @@ function renderJourneysView(c){
      viszont a document-ig bubbleoló globális listenert is elvágná — ezért
      itt (a kampany [data-rpg-json] mintájához hasonlóan) közvetlenül a
      rendereléskor bekötött, hatókörre szűkített listenert használunk. */
+  c.querySelectorAll('[data-stats-journey-id]').forEach(el=>{
+    el.addEventListener('click', (e)=>{ e.stopPropagation(); openJourneyStatsSheet(el.dataset.statsJourneyId); });
+  });
   c.querySelectorAll('[data-native-map-id]').forEach(el=>{
     el.addEventListener('click', (e)=>{ e.stopPropagation(); openJourneyNativeMap(el.dataset.nativeMapId); });
   });
@@ -2418,6 +2422,43 @@ function deleteJourney(id){
   });
 }
 function fmtDuration(min){ if(!min) return '?'; const h=Math.floor(min/60),m=Math.round(min%60); return h? h+'ó '+m+'p' : m+'p'; }
+
+/* Per-túra részletes statisztika sheet - a TÚRÁK lista 📊 gombja nyitja. Csak
+   ténylegesen meglévő/származtatható adatot mutat (nincs kitalált magasság
+   stb.): a mentéskor eltárolt distanceKm/durationMin a forrás, ebből
+   számolt átlagsebesség/tempó, a points tömb hossza, a GPS-pontok t
+   (Date.now()) mezőjéből (ha van - a kézi útvonal-javító beszúrt pontjainak
+   nincs) a kezdés/befejezés időpontja, és a kezdő-végpont légvonalbeli
+   távolsága (haversine() - ld. fent) a tényleges (bejárt) távhoz képest. */
+function openJourneyStatsSheet(id){
+  const j = App.state.journeys.find(x=>x.id===id);
+  if(!j) return;
+  const distanceKm = j.distanceKm||0;
+  const durationMin = j.durationMin||0;
+  const avgSpeedKmh = durationMin>0 ? (distanceKm/(durationMin/60)) : 0;
+  const paceMinPerKm = distanceKm>0 ? (durationMin/distanceKm) : 0;
+  const paceStr = paceMinPerKm>0 ? Math.floor(paceMinPerKm)+':'+pad(Math.round((paceMinPerKm%1)*60))+' / km' : null;
+  const pts = Array.isArray(j.points) ? j.points : [];
+  const withTime = pts.filter(p=>typeof p.t==='number');
+  const startTime = withTime.length ? fmtTime(new Date(withTime[0].t)) : null;
+  const endTime = withTime.length>1 ? fmtTime(new Date(withTime[withTime.length-1].t)) : null;
+  const straightLineKm = pts.length>1 ? haversine(pts[0], pts[pts.length-1])/1000 : null;
+  const line = (label,val)=>`<div class="flex between" style="padding:7px 0;"><span class="small muted">${escapeHtml(label)}</span><span class="mono small" style="font-weight:700;">${escapeHtml(String(val))}</span></div>`;
+  openSheet(`
+    <div class="sheet-head"><div class="sheet-title">📊 ${escapeHtml(j.name)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+    <div class="card" style="padding:4px 16px;">
+      ${line('Dátum', fmtDateHu(j.date))}
+      ${line('Táv', distanceKm.toFixed(2)+' km')}
+      ${line('Időtartam', fmtDuration(durationMin))}
+      ${avgSpeedKmh>0 ? line('Átlagsebesség', avgSpeedKmh.toFixed(1)+' km/ó') : ''}
+      ${paceStr ? line('Átlagos tempó', paceStr) : ''}
+      ${line('GPS pontok száma', pts.length+' db')}
+      ${startTime ? line('Kezdés', startTime) : ''}
+      ${endTime ? line('Befejezés', endTime) : ''}
+      ${straightLineKm!=null ? line('Légvonalban (kezdő–végpont)', straightLineKm.toFixed(2)+' km') : ''}
+    </div>
+  `);
+}
 
 function renderMapView(c){
   const journeys = App.state.journeys;
