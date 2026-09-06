@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.3';
+const APP_VERSION = '2.2.4';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.3';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.4';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -507,12 +507,14 @@ async function loadState(){
       if(!App.state.aiPerm || typeof App.state.aiPerm !== 'object') App.state.aiPerm = d.aiPerm;
       if(!App.state.healthConnect || typeof App.state.healthConnect !== 'object') App.state.healthConnect = d.healthConnect;
       if(!App.state.rpg || typeof App.state.rpg !== 'object') App.state.rpg = d.rpg;
-      if(!Array.isArray(App.state.rpg.weeks) || App.state.rpg.weeks.length !== 52) App.state.rpg.weeks = d.rpg.weeks;
+      if(!App.state.rpg.meta || typeof App.state.rpg.meta !== 'object') App.state.rpg.meta = d.rpg.meta;
+      if(!Array.isArray(App.state.rpg.weeks)) App.state.rpg.weeks = d.rpg.weeks;
+      rpgMigrateToCycleWeeks(App.state.rpg, App.state.schedule && App.state.schedule.pattern);
+      if(App.state.rpg.weeks.length !== (App.state.rpg.meta.weeksTotal||52)) App.state.rpg.weeks = Array.from({length:(App.state.rpg.meta.weeksTotal||52)}, ()=>({quests:[]}));
       App.state.rpg.weeks = App.state.rpg.weeks.map(w=> (w && Array.isArray(w.quests)) ? w : {quests:[]});
       if(!Array.isArray(App.state.rpg.quarterReflections) || App.state.rpg.quarterReflections.length !== 4) App.state.rpg.quarterReflections = ['','','',''];
       if(!Array.isArray(App.state.rpg.favorites)) App.state.rpg.favorites = [];
       if(!Array.isArray(App.state.rpg.bossNotified)) App.state.rpg.bossNotified = [];
-      if(!App.state.rpg.meta || typeof App.state.rpg.meta !== 'object') App.state.rpg.meta = d.rpg.meta;
       if(typeof App.state.rpg.onboarded !== 'boolean') App.state.rpg.onboarded = false;
     } else {
       App.state = defaultState();
@@ -4064,12 +4066,14 @@ function applyImportedJson(text){
   if(!next.aiPerm || typeof next.aiPerm !== 'object') next.aiPerm = d.aiPerm;
   if(!next.healthConnect || typeof next.healthConnect !== 'object') next.healthConnect = d.healthConnect;
   if(!next.rpg || typeof next.rpg !== 'object') next.rpg = d.rpg;
-  if(!Array.isArray(next.rpg.weeks) || next.rpg.weeks.length !== 52) next.rpg.weeks = d.rpg.weeks;
+  if(!next.rpg.meta || typeof next.rpg.meta !== 'object') next.rpg.meta = d.rpg.meta;
+  if(!Array.isArray(next.rpg.weeks)) next.rpg.weeks = d.rpg.weeks;
+  rpgMigrateToCycleWeeks(next.rpg, next.schedule && next.schedule.pattern);
+  if(next.rpg.weeks.length !== (next.rpg.meta.weeksTotal||52)) next.rpg.weeks = Array.from({length:(next.rpg.meta.weeksTotal||52)}, ()=>({quests:[]}));
   next.rpg.weeks = next.rpg.weeks.map(w=> (w && Array.isArray(w.quests)) ? w : {quests:[]});
   if(!Array.isArray(next.rpg.quarterReflections) || next.rpg.quarterReflections.length !== 4) next.rpg.quarterReflections = ['','','',''];
   if(!Array.isArray(next.rpg.favorites)) next.rpg.favorites = [];
   if(!Array.isArray(next.rpg.bossNotified)) next.rpg.bossNotified = [];
-  if(!next.rpg.meta || typeof next.rpg.meta !== 'object') next.rpg.meta = d.rpg.meta;
   if(typeof next.rpg.onboarded !== 'boolean') next.rpg.onboarded = false;
   if(!next.nutrition || typeof next.nutrition !== 'object'){
     next.nutrition = d.nutrition;
@@ -4600,7 +4604,57 @@ const RPG_TIER_STAGES = {
 // A karakter általános fejlődési fázisa (a fő pálya markerén jelenik meg).
 const RPG_OVERALL_STAGES = [[1,'🧙','Zöldfülű kalandor'],[3,'🧙‍♂️','Tapasztalt vándor'],[6,'🦸','Hős'],[10,'👑','Legenda']];
 
-const RPG_WEEKS_TOTAL = 52;
+/* Hét/ciklus-hossz: a felhasználó saját munkarend-mintájához (App.state.schedule.pattern)
+   igazítva, nem fix naptári 7 naphoz - pl. egy 3 munka+3 pihi+3 este+3 pihi (12 napos)
+   ciklusnál minden Életkampány-"hét" pontosan egy teljes ciklust fed le. Ezt (és az
+   ebből adódó teljes hetek számát, úgy méretezve, hogy a teljes kampány nagyjából 1
+   évig tartson) EGYSZER, a kampány indulásakor/migrálásakor rögzítjük rpg.meta.cycleDays/
+   weeksTotal mezőkben (ld. rpgMigrateToCycleWeeks + loadState()/applyImportedJson()) -
+   ha valaki KÉSŐBB módosítja a munkarendjét, ez szándékosan NEM csúsztatja el újra a
+   már elkezdett kampányt (csak egy Kampány újrakezdésekor vesszük figyelembe a friss
+   mintát). A ||7/||52 alapértékek csak a migráció lefutása ELŐTTI, átmeneti állapotra
+   vonatkoznak (pl. defaultState() még nem migrált rpg objektuma). */
+function rpgCycleDays(){ return (App.state.rpg.meta && App.state.rpg.meta.cycleDays) || 7; }
+function rpgWeeksTotal(){ return (App.state.rpg.meta && App.state.rpg.meta.weeksTotal) || 52; }
+function rpgWeeksPerQuarter(){ return Math.ceil(rpgWeeksTotal()/4); }
+// A qIndex-edik (0-3) negyedév UTOLSÓ hete - az utolsó negyedév rövidebb lehet, ha
+// a weeksTotal nem osztható néggyel, ezért clamp-elve van weeksTotal-ra.
+function rpgQuarterBoundary(qIndex){ return Math.min(rpgWeeksTotal(), rpgWeeksPerQuarter()*(qIndex+1)); }
+
+/* Meglévő (naptári-heti) Életkampány-adat egyszeri átalakítása ciklus-alapúra: a már
+   TELJESÍTETT küldetéseket a doneAt valós dátuma alapján soroljuk be az új ciklus-
+   indexbe, a még nem teljesítetteket (nincs valós dátumuk, amihez igazodni lehetne)
+   az éppen aktuális ciklusba - ez az egyetlen dátum nélkül is értelmes hely számukra.
+   A bossNotified-et törli, mert a negyedév-határok is eltolódnak (különben egy már
+   "értesítve" jelölt negyedév hamisan elnyomna egy valódi, új boss-legyőzés
+   értesítést). Idempotens: ha rpg.meta.cycleDays már be van állítva, nem csinál
+   semmit - ez teszi biztonságossá, hogy MINDEN loadState()/applyImportedJson()
+   lefutáskor meghívjuk. */
+function rpgMigrateToCycleWeeks(rpg, schedulePattern){
+  if(rpg.meta && typeof rpg.meta.cycleDays === 'number') return;
+  const cycleDays = Math.max(1, (schedulePattern && schedulePattern.length) || 7);
+  const weeksTotal = Math.max(4, Math.round(365/cycleDays));
+  const startDate = new Date((rpg.meta.startDate || todayISO()) + 'T00:00:00');
+  const newWeeks = Array.from({length:weeksTotal}, ()=>({quests:[]}));
+  const curIdx = Math.min(weeksTotal-1, Math.max(0, Math.floor((Date.now()-startDate.getTime())/86400000/cycleDays)));
+  (rpg.weeks||[]).forEach(w=>{
+    (w && Array.isArray(w.quests) ? w.quests : []).forEach(q=>{
+      let idx = curIdx;
+      if(q.done && q.doneAt){
+        const doneDate = new Date(q.doneAt);
+        if(!isNaN(doneDate.getTime())){
+          idx = Math.floor((doneDate.getTime()-startDate.getTime())/86400000/cycleDays);
+          idx = Math.min(weeksTotal-1, Math.max(0, idx));
+        }
+      }
+      newWeeks[idx].quests.push(q);
+    });
+  });
+  rpg.weeks = newWeeks;
+  rpg.meta.cycleDays = cycleDays;
+  rpg.meta.weeksTotal = weeksTotal;
+  rpg.bossNotified = [];
+}
 const RPG_QUARTER_TARGET_XP = 300; // cél / negyedév / skill fa a boss fighthoz
 const RPG_BOSS_DEFEAT_THRESHOLD = 5; // hány skill fának kell elérnie a negyedéves célt a boss legyőzéséhez
 
@@ -4760,16 +4814,16 @@ function rpgGetCurrentWeekIndex(){
   const start = new Date(App.state.rpg.meta.startDate + 'T00:00:00');
   const now = new Date();
   const diffDays = Math.floor((now - start) / 86400000);
-  return rpgClamp(Math.floor(diffDays/7)+1, 1, RPG_WEEKS_TOTAL);
+  return rpgClamp(Math.floor(diffDays/rpgCycleDays())+1, 1, rpgWeeksTotal());
 }
 function rpgWeekDateRange(weekNum){
   const start = new Date(App.state.rpg.meta.startDate + 'T00:00:00');
-  const from = new Date(start.getTime() + (weekNum-1)*7*86400000);
-  const to = new Date(from.getTime() + 6*86400000);
+  const from = new Date(start.getTime() + (weekNum-1)*rpgCycleDays()*86400000);
+  const to = new Date(from.getTime() + (rpgCycleDays()-1)*86400000);
   const fmt = d => d.toLocaleDateString('hu-HU', {month:'short', day:'numeric'});
   return fmt(from) + ' – ' + fmt(to);
 }
-function rpgQuarterOf(weekNum){ return Math.floor((weekNum-1)/13); }
+function rpgQuarterOf(weekNum){ return Math.min(3, Math.floor((weekNum-1)/rpgWeeksPerQuarter())); }
 
 function rpgCurrentStreak(){
   const cur = rpgGetCurrentWeekIndex();
@@ -4834,7 +4888,7 @@ function rpgGeneratePMMessage(reports){
   } else {
     lines.push({icon:'✅', text:'A csapat minden területen aktív, nincs elhanyagolt front — tartsuk is így!'});
   }
-  lines.push({icon:'📊', text:'Karakter szint: '+overall.level+' · '+rpgOverallTotalXp()+' összes XP · '+streak+' hetes sorozat · '+cur+'. hét / '+RPG_WEEKS_TOTAL+'.'});
+  lines.push({icon:'📊', text:'Karakter szint: '+overall.level+' · '+rpgOverallTotalXp()+' összes XP · '+streak+' hetes sorozat · '+cur+'. hét / '+rpgWeeksTotal()+'.'});
   lines.push({icon:'📜', text: RPG_QUOTES[Math.floor(Math.random()*RPG_QUOTES.length)]});
   return lines;
 }
@@ -4934,7 +4988,7 @@ function rpgDeleteQuest(weekNum, questId){
 // a negyedévben. Csak egyszer natívan-értesít negyedévenként (bossNotified).
 function rpgCheckBossDefeats(){
   for(let qi=0; qi<4; qi++){
-    const startW = qi*13+1, endW = qi*13+13;
+    const startW = qi===0 ? 1 : rpgQuarterBoundary(qi-1)+1, endW = rpgQuarterBoundary(qi);
     let metCount = 0;
     RPG_TRACKS.forEach(t=>{
       let sum=0;
@@ -4994,10 +5048,10 @@ function rpgHandleChipClick(d){
 
 /* ---- Belső tab / hét-navigáció / accordion / fókusz mód ---- */
 function rpgSetTab(tabId){ App.ui.rpgTab = tabId; App.ui.rpgOpenAccordion = null; RENDERERS.kampany(); }
-function rpgPrevWeek(){ App.ui.rpgViewingWeek = rpgClamp(App.ui.rpgViewingWeek-1,1,RPG_WEEKS_TOTAL); App.ui.rpgOpenAccordion=null; RENDERERS.kampany(); }
-function rpgNextWeek(){ App.ui.rpgViewingWeek = rpgClamp(App.ui.rpgViewingWeek+1,1,RPG_WEEKS_TOTAL); App.ui.rpgOpenAccordion=null; RENDERERS.kampany(); }
+function rpgPrevWeek(){ App.ui.rpgViewingWeek = rpgClamp(App.ui.rpgViewingWeek-1,1,rpgWeeksTotal()); App.ui.rpgOpenAccordion=null; RENDERERS.kampany(); }
+function rpgNextWeek(){ App.ui.rpgViewingWeek = rpgClamp(App.ui.rpgViewingWeek+1,1,rpgWeeksTotal()); App.ui.rpgOpenAccordion=null; RENDERERS.kampany(); }
 function rpgJumpCurrentWeek(){ App.ui.rpgViewingWeek = rpgGetCurrentWeekIndex(); App.ui.rpgOpenAccordion=null; RENDERERS.kampany(); }
-function rpgJumpToWeek(weekNum){ App.ui.rpgViewingWeek = rpgClamp(Number(weekNum),1,RPG_WEEKS_TOTAL); App.ui.rpgTab='week'; App.ui.rpgOpenAccordion=null; RENDERERS.kampany(); }
+function rpgJumpToWeek(weekNum){ App.ui.rpgViewingWeek = rpgClamp(Number(weekNum),1,rpgWeeksTotal()); App.ui.rpgTab='week'; App.ui.rpgOpenAccordion=null; RENDERERS.kampany(); }
 function rpgToggleAccordion(trackId){ App.ui.rpgOpenAccordion = App.ui.rpgOpenAccordion===trackId ? null : trackId; RENDERERS.kampany(); }
 function rpgToggleFocusMode(){ App.ui.rpgFocusMode = !App.ui.rpgFocusMode; RENDERERS.kampany(); }
 function rpgAddCustomQuest(){
@@ -5014,7 +5068,7 @@ function rpgSaveSettings(){
   App.state.rpg.meta.name = document.getElementById('rpg-set-name').value.trim();
   App.state.rpg.meta.startDate = document.getElementById('rpg-set-startdate').value || App.state.rpg.meta.startDate;
   saveState();
-  App.ui.rpgViewingWeek = rpgClamp(rpgGetCurrentWeekIndex(), 1, RPG_WEEKS_TOTAL);
+  App.ui.rpgViewingWeek = rpgClamp(rpgGetCurrentWeekIndex(), 1, rpgWeeksTotal());
   RENDERERS.kampany();
   toast('Beállítások mentve.');
 }
@@ -5028,6 +5082,7 @@ function rpgResetCampaign(){
   App.state.rpg = defaultState().rpg;
   App.state.rpg.meta.name = name;
   App.state.rpg.onboarded = true;
+  rpgMigrateToCycleWeeks(App.state.rpg, App.state.schedule && App.state.schedule.pattern);
   saveState();
   App.ui.rpgViewingWeek = 1;
   App.ui.rpgTab = 'dashboard';
@@ -5043,7 +5098,7 @@ function rpgResetCampaign(){
 function rpgShowOnboarding(){
   const m = App.state.rpg.meta;
   openSheet(`<div class="sheet-head"><div class="sheet-title">⚔️ Üdv a kampányban!</div></div>
-    <p class="small muted" style="margin-bottom:16px;">${RPG_WEEKS_TOTAL} hét, ${RPG_TRACKS.length} fejlesztendő terület, heti küldetések, negyedéves boss fightok. Adj a karakterednek nevet, és indulhat az első hét.</p>
+    <p class="small muted" style="margin-bottom:16px;">${rpgWeeksTotal()} hét, ${RPG_TRACKS.length} fejlesztendő terület, heti küldetések, negyedéves boss fightok. Adj a karakterednek nevet, és indulhat az első hét.</p>
     <div class="field"><label>Karakter neve</label><input type="text" id="rpg-onboard-name" placeholder="pl. Kvantum"></div>
     <div class="field"><label>Mikor kezdődjön az 1. hét?</label><input type="date" id="rpg-onboard-date" value="${escapeHtml(m.startDate)}"></div>
     <button class="btn btn-primary btn-block" data-click="rpgFinishOnboarding">Kaland kezdése</button>`);
@@ -5053,7 +5108,7 @@ function rpgFinishOnboarding(){
   App.state.rpg.meta.startDate = document.getElementById('rpg-onboard-date').value || App.state.rpg.meta.startDate;
   App.state.rpg.onboarded = true;
   saveState();
-  App.ui.rpgViewingWeek = rpgClamp(rpgGetCurrentWeekIndex(), 1, RPG_WEEKS_TOTAL);
+  App.ui.rpgViewingWeek = rpgClamp(rpgGetCurrentWeekIndex(), 1, rpgWeeksTotal());
   closeSheet();
   RENDERERS.kampany();
 }
@@ -5142,7 +5197,7 @@ function rpgRenderMapTab(){
   const height = marginY*2 + (rows-1)*rowGap;
 
   const points = [];
-  for(let w=1; w<=RPG_WEEKS_TOTAL; w++){
+  for(let w=1; w<=rpgWeeksTotal(); w++){
     const rowIdx = Math.floor((w-1)/cols);
     const colIdx = (w-1)%cols;
     const xColIdx = (rowIdx%2===0) ? colIdx : (cols-1-colIdx);
@@ -5150,8 +5205,9 @@ function rpgRenderMapTab(){
   }
   const pathD = points.map((p,i)=> (i===0?'M':'L') + p.x.toFixed(1) + ',' + p.y.toFixed(1)).join(' ');
 
+  const quarterBossWeeks = [0,1,2,3].map(rpgQuarterBoundary);
   const nodesSvg = points.map(p=>{
-    const isBoss = p.w % 13 === 0;
+    const isBoss = quarterBossWeeks.includes(p.w);
     const score = rpgWeekScore(p.w);
     const isCurrent = p.w===cur;
     const reached = p.w <= cur;
@@ -5159,7 +5215,7 @@ function rpgRenderMapTab(){
     const r = isBoss ? 15 : (isCurrent ? 13 : 8);
     const ring = isCurrent ? `<circle cx="${p.x}" cy="${p.y}" r="${r+7}" fill="none" stroke="#EDE9DD" stroke-width="2.5" opacity="0.8"><animate attributeName="r" values="${r+5};${r+11};${r+5}" dur="1.8s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.9;0.15;0.9" dur="1.8s" repeatCount="indefinite"/></circle>` : '';
     const label = isBoss ? '🏰' : (isCurrent ? stage[1] : p.w);
-    const bossLabel = isBoss ? `<text x="${p.x}" y="${p.y - r - 8}" text-anchor="middle" font-size="10" fill="#4A85AC">Q${p.w/13} Boss</text>` : '';
+    const bossLabel = isBoss ? `<text x="${p.x}" y="${p.y - r - 8}" text-anchor="middle" font-size="10" fill="#4A85AC">Q${rpgQuarterOf(p.w)+1} Boss</text>` : '';
     return `<g data-click="rpgJumpToWeek" data-id="${p.w}" style="cursor:pointer;">
         ${ring}
         <circle cx="${p.x}" cy="${p.y}" r="${r}" fill="${fill}" stroke="${isBoss?'#4A85AC':'rgba(237,233,221,0.25)'}" stroke-width="${isBoss?2.5:1.5}"/>
@@ -5169,7 +5225,7 @@ function rpgRenderMapTab(){
   }).join('');
 
   return `
-    <div class="sectiontitle">Fő pálya — a teljes ${RPG_WEEKS_TOTAL} hetes utazás</div>
+    <div class="sectiontitle">Fő pálya — a teljes ${rpgWeeksTotal()} hetes utazás</div>
     <p class="small muted" style="margin:-6px 0 12px;">A kampányod egész éves útvonala. Kattints egy állomásra, hogy odaugorj arra a hétre. Jelenlegi formád: <b style="color:var(--trail-yellow);">${stage[1]} ${stage[2]}</b></p>
     <div class="card" style="overflow-x:auto;">
       <svg viewBox="0 0 ${width} ${height}" style="width:100%;height:auto;min-width:600px;display:block;">
@@ -5236,7 +5292,7 @@ function rpgRenderWeekTab(){
         <div class="card-title" style="margin-bottom:0;">${viewingWeek}. hét</div>
         <div class="small muted">${rpgWeekDateRange(viewingWeek)} · Q${rpgQuarterOf(viewingWeek)+1}</div>
       </div>
-      <button class="iconbtn" data-click="rpgNextWeek" ${viewingWeek>=RPG_WEEKS_TOTAL?'style="opacity:.35;pointer-events:none;"':''}>▶</button>
+      <button class="iconbtn" data-click="rpgNextWeek" ${viewingWeek>=rpgWeeksTotal()?'style="opacity:.35;pointer-events:none;"':''}>▶</button>
     </div>
     ${viewingWeek!==cur ? `<button class="btn btn-secondary btn-sm btn-block" style="margin:10px 0;" data-click="rpgJumpCurrentWeek">Ugrás a mai héthez (${cur}.)</button>` : ''}
     <p class="small muted" style="text-align:center;margin:8px 0 16px;">Heti pontszám: <b class="mono" style="color:var(--trail-yellow);">${rpgWeekScore(viewingWeek)} XP</b></p>
@@ -5315,7 +5371,7 @@ function rpgRenderTimelineTab(){
   const viewingWeek = App.ui.rpgViewingWeek;
   let blocks = '';
   for(let q=0; q<4; q++){
-    const startW = q*13+1, endW = q*13+13;
+    const startW = q===0 ? 1 : rpgQuarterBoundary(q-1)+1, endW = rpgQuarterBoundary(q);
     let cells = '';
     for(let w=startW; w<=endW; w++){
       const score = rpgWeekScore(w);
@@ -5357,7 +5413,7 @@ function rpgRenderTimelineTab(){
         ` : `<p class="small muted" style="margin-top:6px;">Ez a negyedév még nem kezdődött el.</p>`}
       </div>`;
   }
-  return `<div class="sectiontitle">Kampány idővonal — ${RPG_WEEKS_TOTAL} hét</div>${blocks}`;
+  return `<div class="sectiontitle">Kampány idővonal — ${rpgWeeksTotal()} hét</div>${blocks}`;
 }
 
 function rpgRenderSettingsTab(){
@@ -5378,7 +5434,7 @@ function rpgRenderSettingsTab(){
 
 RENDERERS.kampany = function(){
   if(App.ui.rpgViewingWeek == null){
-    App.ui.rpgViewingWeek = rpgClamp(rpgGetCurrentWeekIndex(), 1, RPG_WEEKS_TOTAL);
+    App.ui.rpgViewingWeek = rpgClamp(rpgGetCurrentWeekIndex(), 1, rpgWeeksTotal());
   }
   const totalXp = rpgOverallTotalXp();
   const lvl = rpgOverallLevel(totalXp);
@@ -5390,7 +5446,7 @@ RENDERERS.kampany = function(){
     <div class="card">
       <div class="flex between center" style="flex-wrap:wrap;gap:6px;">
         <div class="small"><b>${escapeHtml(name)}</b> <span class="muted">· Szint ${lvl.level} · ${totalXp} XP</span></div>
-        <div class="small muted">🔥 ${streak} hetes sorozat · ${cur}. hét / ${RPG_WEEKS_TOTAL} · Q${rpgQuarterOf(cur)+1}</div>
+        <div class="small muted">🔥 ${streak} hetes sorozat · ${cur}. hét / ${rpgWeeksTotal()} · Q${rpgQuarterOf(cur)+1}</div>
       </div>
       <div class="progwrap" style="margin-top:8px;"><div class="progbar" style="width:${lvl.pct}%;"></div></div>
       <div class="small muted" style="margin-top:4px;">${lvl.into} / ${lvl.need} XP a köv. szintig</div>
