@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.13';
+const APP_VERSION = '2.2.14';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.13';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.14';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -445,6 +445,7 @@ function defaultState(){
         {id:'s3',name:'Vésztartalék',icon:'🏦',saved:0,target:500000},
       ],
       foodOrders:[], // {id,amount,rawText,date,appliedToDiscretionaryId} - banki/Foodora értesítésből rögzített ételrendelések
+      spendLedger:[], // {id,categoryId,amount,date,source} - könnyű napló csak dedup-ellenőrzéshez, ld. recordSpendAndCheckDup()
     },
     journeys:[],
     journal:[], // {id,date,mood(1-5),text} - hangulatnapló bejegyzések
@@ -503,6 +504,7 @@ async function loadState(){
         if(!Array.isArray(App.state[k])) App.state[k] = d[k];
       }
       if(!Array.isArray(App.state.finance.foodOrders)) App.state.finance.foodOrders = d.finance.foodOrders;
+      if(!Array.isArray(App.state.finance.spendLedger)) App.state.finance.spendLedger = d.finance.spendLedger;
       if(!App.state.skills || typeof App.state.skills !== 'object') App.state.skills = {};
       if(!App.state.aiPerm || typeof App.state.aiPerm !== 'object') App.state.aiPerm = d.aiPerm;
       if(!App.state.healthConnect || typeof App.state.healthConnect !== 'object') App.state.healthConnect = d.healthConnect;
@@ -868,6 +870,7 @@ RENDERERS.ma = function(){
   const el = document.getElementById('view-ma');
   el.innerHTML = `
     <div class="sectiontitle">Ma <span class="mono small">${doneCount}/${tasksToday.length} kész</span></div>
+    ${_saveFailStreak>0 ? `<div id="save-status-badge">${saveStatusBadgeHtml()}</div>` : ''}
     <div class="card" style="padding:12px 16px;">
       <div class="flex gap8" style="align-items:flex-start;">
         <span style="font-size:18px;line-height:1.4;">💡</span>
@@ -2373,10 +2376,24 @@ function openSaveJourneySheet(){
   `);
 }
 function discardTrack(){ App.ui.trackPoints=[]; App.ui.trackStart=null; App.state.trackDraft=null; saveState(); closeSheet(); renderTrackView(); }
+// decimatePoints: egyszerű, fix-lépésközű ritkítás - egy hosszú túra GPS-pontjainak
+// száma korlátlanul nőhetne (minden mentett pont örökre localStorage-ban marad), ez
+// egyetlen hosszú túránál is könnyen több ezer pontot jelenthet. A cél csak a
+// TÁROLT adat méretének korlátozása, nem valódi útvonal-egyszerűsítés (pl.
+// Douglas-Peucker) - az első és utolsó pont mindig megmarad, a kettő közöttiek
+// egyenletes lépésközzel ritkulnak, ha a pontszám a limit fölött van.
+function decimatePoints(points, maxPoints){
+  if(!Array.isArray(points) || points.length<=maxPoints) return points;
+  const step = points.length / maxPoints;
+  const out = [];
+  for(let i=0;i<maxPoints;i++) out.push(points[Math.floor(i*step)]);
+  out.push(points[points.length-1]);
+  return out;
+}
 function saveJourney(){
   const name=document.getElementById('nj-name').value.trim()||'Túra';
   const dist=trackDistanceKm(), durationMin=(Date.now()-App.ui.trackStart)/60000;
-  App.state.journeys.push({id:uid(),name,date:todayISO(),distanceKm:dist,durationMin,points:App.ui.trackPoints});
+  App.state.journeys.push({id:uid(),name,date:todayISO(),distanceKm:dist,durationMin,points:decimatePoints(App.ui.trackPoints, 1500)});
   App.state.trackDraft=null;
   saveState(); App.ui.trackPoints=[]; App.ui.trackStart=null;
   closeSheet(); toast('Túra elmentve 🥾'); renderApp();
@@ -3717,8 +3734,10 @@ function applyAiSuggestion(s){
     const item = (App.state.finance.discretionary||[]).find(x=>normFin(x.name)===target)
       || (App.state.finance.discretionary||[]).find(x=>normFin(x.name).includes(target)||target.includes(normFin(x.name)));
     if(!item) return 'Nincs ilyen egyéb kiadás kategória — vedd fel előbb a Pénzügyek fülön ✗';
-    item.spent = (item.spent||0) + (Number(s.amount)||0);
-    return '🛍️ '+item.name+': +'+(Number(s.amount)||0).toLocaleString('hu-HU')+' Ft költés rögzítve ✓';
+    const amount = Number(s.amount)||0;
+    item.spent = (item.spent||0) + amount;
+    const dupWarning = recordSpendAndCheckDup(item.id, amount, todayISO(), 'ai');
+    return '🛍️ '+item.name+': +'+amount.toLocaleString('hu-HU')+' Ft költés rögzítve ✓' + (dupWarning ? ' ⚠️ '+dupWarning : '');
   }
   if(s.type==='savings_add'){
     const target = normFin(s.name||'');
@@ -4051,12 +4070,29 @@ function logSpendSheet(id){
     <div class="field"><input type="number" id="sp-amount" min="0" style="font-size:20px;text-align:center;padding:16px;" placeholder="Ft"></div>
     <button class="btn btn-primary btn-block" onclick="saveSpend('${id}')">Hozzáadás</button>`);
 }
+// recordSpendAndCheckDup: minden egyes rögzített egyéb kiadást felír egy közös,
+// könnyű naplóba (App.state.finance.spendLedger), és megnézi, volt-e MÁR ugyanazon a
+// napon, ugyanahhoz a kategóriához, ugyanakkora összeggel, MÁS forrásból rögzített
+// tétel - ha igen, ez valószínűleg ugyanannak a valódi tranzakciónak a duplikált
+// rögzítése (pl. az AI chat és a banki értesítés is elkapta ugyanazt a fizetést).
+// NEM blokkol (lehet, hogy tényleg két külön, egyforma összegű vásárlás történt
+// aznap) - csak egy külön toast-figyelmeztetést ad vissza a hívónak.
+function recordSpendAndCheckDup(categoryId, amount, date, source){
+  App.state.finance.spendLedger = App.state.finance.spendLedger || [];
+  const dup = App.state.finance.spendLedger.find(e=>
+    e.categoryId===categoryId && e.amount===amount && e.date===date && e.source!==source);
+  App.state.finance.spendLedger.push({id:uid(), categoryId, amount, date, source});
+  // Ésszerű méretkorlát - a napló csak dedup-célra kell, nem hosszú távú history-nak.
+  if(App.state.finance.spendLedger.length>500) App.state.finance.spendLedger = App.state.finance.spendLedger.slice(-500);
+  return dup ? 'Figyelem: úgy tűnik, ez már rögzítve lett ma ehhez a kategóriához ugyanekkora összeggel (' + (source==='ai'?'chat':source==='foodora'?'Foodora-értesítés':source==='bank'?'banki értesítés':'kézi rögzítés') + ') — ellenőrizd, nem duplikálod-e.' : null;
+}
 function saveSpend(id){
   const x=App.state.finance.discretionary.find(i=>i.id===id); if(!x) return;
   const v=parseFloat(document.getElementById('sp-amount').value)||0;
   if(v<0){ toast('Az érték nem lehet negatív'); return; }
   x.spent=(x.spent||0)+v;
-  saveState(); closeSheet(); toast('Rögzítve'); RENDERERS.finance();
+  const dupWarning = recordSpendAndCheckDup(x.id, v, todayISO(), 'manual');
+  saveState(); closeSheet(); toast(dupWarning ? 'Rögzítve ⚠️ '+dupWarning : 'Rögzítve'); RENDERERS.finance();
 }
 
 /* ===== NATÍV ÉRTESÍTÉS-HÍDOK (Android WebView.evaluateJavascript hívja) =====
@@ -4103,7 +4139,8 @@ function saveBankNotification(){
   const x = App.state.finance.discretionary.find(i=>i.id===activeChip.dataset.id);
   if(!x){ toast('Kategória nem található'); return; }
   x.spent=(x.spent||0)+v;
-  saveState(); closeSheet(); toast('Elmentve'); RENDERERS.finance();
+  const dupWarning = recordSpendAndCheckDup(x.id, v, todayISO(), 'bank');
+  saveState(); closeSheet(); toast(dupWarning ? 'Elmentve ⚠️ '+dupWarning : 'Elmentve'); RENDERERS.finance();
 }
 /* findFoodDiscretionaryCategory: a meglévő "Egyéb kategóriák" (discretionary)
    listából megkeresi az étterem/kávé jellegű tételt (alapértelmezésben
@@ -4139,7 +4176,8 @@ function saveFoodoraOrder(){
   if(!x){ toast('Nincs megfelelő kategória felvéve az étkezéshez'); return; }
   App.state.finance.foodOrders.unshift({id:uid(), amount:v, rawText:ctx.rawText||'', date:todayISO(), appliedToDiscretionaryId:x.id});
   x.spent=(x.spent||0)+v;
-  saveState(); closeSheet(); toast('Rögzítve'); RENDERERS.finance();
+  const dupWarning = recordSpendAndCheckDup(x.id, v, todayISO(), 'foodora');
+  saveState(); closeSheet(); toast(dupWarning ? 'Rögzítve ⚠️ '+dupWarning : 'Rögzítve'); RENDERERS.finance();
 }
 
 function manageDiscretionarySheet(id){
@@ -4585,6 +4623,7 @@ function applyImportedJson(text){
   if(!Array.isArray(next.finance.discretionary)) next.finance.discretionary = d.finance.discretionary;
   if(!Array.isArray(next.finance.savings)) next.finance.savings = d.finance.savings;
   if(!Array.isArray(next.finance.foodOrders)) next.finance.foodOrders = d.finance.foodOrders;
+  if(!Array.isArray(next.finance.spendLedger)) next.finance.spendLedger = d.finance.spendLedger;
   for(const k of ['tasks','events','workouts','weightLog','healthLog','journeys','journal','aiChat','activities','customSports','customSkillNodes']){
     if(!Array.isArray(next[k])) next[k] = d[k];
   }
