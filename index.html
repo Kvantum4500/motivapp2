@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.10';
+const APP_VERSION = '2.2.11';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.10';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.11';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -2984,6 +2984,62 @@ function parseTimeHU(normSeg){
   if(m) return pad(parseInt(m[1],10))+':00';
   return '';
 }
+/* ORDINAL_DAY_FROM_HU / ORDINAL_DAY_TO_HU: a hónap napjainak kiírt sorszámneve
+   "-tól/-től" (kezdő nap) és "-ig" (záró nap) ragozott alakban, 1-31. A magyar
+   magánhangzó-harmónia (a/e) miatt számonként külön fel kell sorolni (nem
+   generálható egyszerű képlettel), ezért ÉKEZETESEN vannak megadva - a normalizált
+   (ékezet nélküli) alakot futáskor a normalizeHU()-val számoljuk, hogy garantáltan
+   ugyanazt a szabályt kövesse, mint a fájl többi illesztése. Az ékezetes alakok a
+   címből való eltávolításnál (parseLocalTaskEventCommand) is kellenek. */
+const ORDINAL_DAY_FROM_HU = {1:'elsejétől',2:'másodikától',3:'harmadikától',4:'negyedikétől',5:'ötödikétől',6:'hatodikától',7:'hetedikétől',8:'nyolcadikától',9:'kilencedikétől',10:'tizedikétől',11:'tizenegyedikétől',12:'tizenkettedikétől',13:'tizenharmadikától',14:'tizennegyedikétől',15:'tizenötödikétől',16:'tizenhatodikától',17:'tizenhetedikétől',18:'tizennyolcadikától',19:'tizenkilencedikétől',20:'huszadikától',21:'huszonegyedikétől',22:'huszonkettedikétől',23:'huszonharmadikától',24:'huszonnegyedikétől',25:'huszonötödikétől',26:'huszonhatodikától',27:'huszonhetedikétől',28:'huszonnyolcadikától',29:'huszonkilencedikétől',30:'harmincadikától',31:'harmincegyedikétől'};
+const ORDINAL_DAY_TO_HU = {1:'elsejéig',2:'másodikáig',3:'harmadikáig',4:'negyedikéig',5:'ötödikéig',6:'hatodikáig',7:'hetedikéig',8:'nyolcadikáig',9:'kilencedikéig',10:'tizedikéig',11:'tizenegyedikéig',12:'tizenkettedikéig',13:'tizenharmadikáig',14:'tizennegyedikéig',15:'tizenötödikéig',16:'tizenhatodikáig',17:'tizenhetedikéig',18:'tizennyolcadikáig',19:'tizenkilencedikéig',20:'huszadikáig',21:'huszonegyedikéig',22:'huszonkettedikéig',23:'huszonharmadikáig',24:'huszonnegyedikéig',25:'huszonötödikéig',26:'huszonhatodikáig',27:'huszonhetedikéig',28:'huszonnyolcadikáig',29:'huszonkilencedikéig',30:'harmincadikáig',31:'harmincegyedikéig'};
+const MAX_DATE_RANGE_DAYS = 14; // ennél hosszabb (feltehetően félreértett) tartományt inkább nem találgatunk
+
+/* parseDateRangeHU: több napra kiterjedő "X-tól/-től Y-ig" dátumtartományt ismer
+   fel - kiírt sorszámnévvel ("kilencedikétől tizenegyedikéig") VAGY számjeggyel
+   ("9-től 11-ig"). A találatot a szóhatáros (\b) illesztés védi az olyan
+   substring-ütközésektől, mint pl. "harmadikától" (3.) benne van a
+   "tizenharmadikától" (13.) szó VÉGÉN - mivel a magyar összetett számnevek
+   elválasztójel nélkül kapcsolódnak, a \b csak a teljes szó elején/végén illeszkedik,
+   a szó belsejében nem, így a hosszabb (helyes) szám nyer. Ha a hónap adott napja(i)
+   már elmúltak ebben a hónapban, a KÖVETKEZŐ hónapra tolja (jövőbeli értelmezés,
+   ugyanaz az elv, mint a parseRelativeDateHU hétnapneveinél). Visszatérési érték
+   null, ha nincs egyértelmű tartomány, vagy az ésszerűtlenül hosszú (> MAX_DATE_RANGE_DAYS). */
+function parseDateRangeHU(normSeg){
+  let fromDay=null, toDay=null;
+  for(const num of Object.keys(ORDINAL_DAY_FROM_HU)){
+    const re=new RegExp('\\b'+normalizeHU(ORDINAL_DAY_FROM_HU[num])+'\\b');
+    if(re.test(normSeg)){ fromDay=parseInt(num,10); break; }
+  }
+  if(fromDay==null){
+    const m=normSeg.match(/\b(\d{1,2})\s*-?\s*tol\b/);
+    if(m && +m[1]>=1 && +m[1]<=31) fromDay=parseInt(m[1],10);
+  }
+  for(const num of Object.keys(ORDINAL_DAY_TO_HU)){
+    const re=new RegExp('\\b'+normalizeHU(ORDINAL_DAY_TO_HU[num])+'\\b');
+    if(re.test(normSeg)){ toDay=parseInt(num,10); break; }
+  }
+  if(toDay==null){
+    const m=normSeg.match(/\b(\d{1,2})\s*-?\s*ig\b/);
+    if(m && +m[1]>=1 && +m[1]<=31) toDay=parseInt(m[1],10);
+  }
+  if(fromDay==null || toDay==null) return null;
+
+  const today=new Date(); today.setHours(0,0,0,0);
+  let start=new Date(today.getFullYear(), today.getMonth(), fromDay);
+  if(start<today) start=new Date(today.getFullYear(), today.getMonth()+1, fromDay);
+  let end=new Date(start.getFullYear(), start.getMonth(), toDay);
+  if(toDay<fromDay) end=new Date(start.getFullYear(), start.getMonth()+1, toDay); // hónapváltós tartomány
+
+  const dates=[];
+  const cur=new Date(start);
+  while(cur<=end && dates.length<=MAX_DATE_RANGE_DAYS){
+    dates.push(toLocalISO(cur));
+    cur.setDate(cur.getDate()+1);
+  }
+  if(!dates.length || dates.length>MAX_DATE_RANGE_DAYS) return null;
+  return {dates, fromNum:fromDay, toNum:toDay};
+}
 /* parseLocalTaskEventCommand: EGY szövegből TÖBB feladat/esemény-jelöltet is
    kigyűjt (lásd handleLocalAiCommand). A finance-ág mondatokra-bontós mintáját
    követi: a szöveget mondatokra/tagmondatokra bontjuk ('.', '!', '?' mentén), és
@@ -3080,7 +3136,8 @@ function parseLocalTaskEventCommand(text){
     const normSeg=normSegs[m.i];
     if(taskEventContextExclude.some(x=>normSeg.includes(x))) return; // múlt idejű/befejezett kijelentés
     const rawSeg=rawSegs[m.i];
-    const ownDate=parseRelativeDateHU(normSeg);
+    const dateRange=parseDateRangeHU(normSeg);
+    const ownDate=dateRange?'':parseRelativeDateHU(normSeg);
     const time=parseTimeHU(normSeg);
     // Megj.: sima \w NEM illeszkedik az ékezetes magyar betűkre (pl. "rögzítése" -> \w*
     // megállna az "é"-nél és "ése" beragadna a címbe), ezért itt - a parseLocalMealCommand
@@ -3098,16 +3155,44 @@ function parseLocalTaskEventCommand(text){
       .replace(/\d{1,2}[:.]\d{2}\b/g,' ')
       .replace(/\bdélután\s+\d{1,2}(\s*órakor|\s*óra)?\b/gi,' ')
       .replace(/\b\d{1,2}\s*órakor\b/gi,' ')
-      .replace(/\b\d{1,2}\s*óra\b/gi,' ')
+      .replace(/\b\d{1,2}\s*óra\b/gi,' ');
+    if(dateRange){
+      // Az ékezetes sorszónevet (ha az illett) ÉS az általános számjegyes mintát
+      // (ha az illett) is eltávolítjuk - a kettő közül úgyis csak az egyik van
+      // ténylegesen jelen a szövegben, a másik illesztés ártalmatlan no-op.
+      title=title
+        .replace(new RegExp('\\b'+ORDINAL_DAY_FROM_HU[dateRange.fromNum]+'\\b','gi'),' ')
+        .replace(new RegExp('\\b'+ORDINAL_DAY_TO_HU[dateRange.toNum]+'\\b','gi'),' ')
+        .replace(/\b\d{1,2}\s*-?\s*t[oóő]l\b/gi,' ')
+        .replace(/\b\d{1,2}\s*-?\s*ig\b/gi,' ');
+    }
+    title=title
       .replace(/^[\s,:;.\-–]+|[\s,:;.\-–]+$/g,'')
       .replace(/\s+/g,' ').trim();
     if(!title) return; // cím nélkül nem hozunk létre javaslatot
-    const date=ownDate||inheritedDate||'';
-    if(mode==='event'){
-      const eventType=normSeg.includes('edzes')?'edzes':'esemeny';
-      results.push({type:'event',title,date,time,eventType});
+    if(dateRange){
+      // Több napot átívelő megbízás/esemény: mivel sem a feladat, sem az esemény
+      // adatmodellje nem támogat dátumTARTOMÁNYt (mindkettő egyetlen "due"/"date"
+      // mezőt tárol - lásd saveNewTask/saveNewEvent), a leghűbb leképezés egy önálló,
+      // egyenként jóváhagyható javaslat-kártya minden egyes érintett napra, azonos
+      // címmel - ez a naptárban is helyesen, minden napon megjelenik, és bármelyik nap
+      // egyedileg is pipálható/törölhető.
+      dateRange.dates.forEach(d=>{
+        if(mode==='event'){
+          const eventType=normSeg.includes('edzes')?'edzes':'esemeny';
+          results.push({type:'event',title,date:d,time,eventType});
+        }else{
+          results.push({type:'task',title,due:d});
+        }
+      });
     }else{
-      results.push({type:'task',title,due:date});
+      const date=ownDate||inheritedDate||'';
+      if(mode==='event'){
+        const eventType=normSeg.includes('edzes')?'edzes':'esemeny';
+        results.push({type:'event',title,date,time,eventType});
+      }else{
+        results.push({type:'task',title,due:date});
+      }
     }
   });
   return results;
