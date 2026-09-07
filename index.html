@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.8';
+const APP_VERSION = '2.2.9';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.8';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.9';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -2899,6 +2899,55 @@ function parseLocalWorkoutCommand(text){
   return {type:'workout', category, durationMin, date, muscleGroups:[], notes:''};
 }
 
+/* parseLocalWeightCommand / parseLocalJournalCommand / parseLocalDiscretionarySpendCommand /
+   parseLocalSavingsAddCommand: ugyanazt a célt szolgálják, mint a fenti meal/workout
+   parserek - hogy minél több gyakori MotivAI-parancs API kulcs (fizetős Anthropic
+   hívás) NÉLKÜL, helyben is működjön. A discretionary/savings parsereknél a
+   kategórianevet NEM próbáljuk szabad szövegből kitalálni - ehelyett a TÉNYLEGESEN
+   létező (App.state.finance.discretionary/savings) kategórianevekhez illesztjük
+   substring-alapon, ami egyúttal a magyar ragozott alakokat (pl. "szórakozásra" a
+   "szórakozás" tő prefixeként) is helyesen kezeli, és nem igényel toldalék-levágást. */
+function parseLocalWeightCommand(text){
+  const raw=(text||'').trim(), n=normalizeHU(raw);
+  let mm = n.match(/(\d{2,3}(?:[.,]\d)?)\s*kg\s+vagyok\b/);
+  if(!mm && /\b(sulyom|testsulyom)\w*\b/.test(n)) mm = n.match(/(\d{2,3}(?:[.,]\d)?)\s*kg\b/);
+  if(!mm && /\b(lemertem|megmertem)\w*\s+magam/.test(n)) mm = n.match(/(\d{2,3}(?:[.,]\d)?)\s*kg\b/);
+  if(!mm) return null;
+  const kg = parseFloat(mm[1].replace(',','.'));
+  if(!(kg>0)) return null;
+  const date = parsePastRelativeDateHU(n) || todayISO();
+  return {type:'weight', kg, date};
+}
+function parseLocalJournalCommand(text){
+  const raw=(text||'').trim(), n=normalizeHU(raw);
+  const startsWithLabel = /^naplo\w*\s*(?:bejegyzes\w*)?\s*[:\-]/.test(n);
+  const imperative = /\bnaplozd\b/.test(n) || /jegyezd fel.*naplo\w*/.test(n);
+  if(!startsWithLabel && !imperative) return null;
+  const content = raw.replace(/^.*?naplo\w*\s*(?:bejegyzes\w*)?\s*[:.,!?-]*\s*(?:a naploba\s*[:.,!?-]*\s*)?/i,'').trim();
+  const moodMatch = n.match(/\b([1-5])\s*\/\s*5\b/) || n.match(/hangulat\w*\s*[: ]?\s*([1-5])\b/);
+  const mood = moodMatch ? parseInt(moodMatch[1],10) : null;
+  if(!content && !mood) return null;
+  return {type:'journal', mood, text: content||''};
+}
+function parseLocalDiscretionarySpendCommand(text){
+  const raw=(text||'').trim(), n=normalizeHU(raw);
+  if(!/\b(elkoltottem|koltottem|kiadtam)\w*\b/.test(n)) return null;
+  const amount = parseHUFAmount(raw);
+  if(!amount) return null;
+  const hit = (App.state.finance.discretionary||[]).find(c=>n.includes(normalizeHU(c.name)));
+  if(!hit) return null;
+  return {type:'discretionary_spend', name:hit.name, amount};
+}
+function parseLocalSavingsAddCommand(text){
+  const raw=(text||'').trim(), n=normalizeHU(raw);
+  if(!/\b(felretettem|megtakaritottam|takarekoskodtam)\w*\b/.test(n)) return null;
+  const amount = parseHUFAmount(raw);
+  if(!amount) return null;
+  const hit = (App.state.finance.savings||[]).find(c=>n.includes(normalizeHU(c.name)));
+  if(!hit) return null;
+  return {type:'savings_add', name:hit.name, amount};
+}
+
 /* parseRelativeDateHU / parseTimeHU: csak EGYÉRTELMŰ relatív dátum- és időpont-
    kifejezéseket ismernek fel (ma/holnap/holnapután, ill. "16 óra"/"16:30"/
    "délután 4"). Minden más esetben üres stringet adnak vissza — NEM találgatunk,
@@ -3104,6 +3153,18 @@ function handleLocalAiCommand(text){
   const workout=parseLocalWorkoutCommand(text);
   if(workout){ addLocalAiSuggestions([workout]); return true; }
 
+  const weight=parseLocalWeightCommand(text);
+  if(weight){ addLocalAiSuggestions([weight]); return true; }
+
+  const journal=parseLocalJournalCommand(text);
+  if(journal){ addLocalAiSuggestions([journal]); return true; }
+
+  const discSpend=parseLocalDiscretionarySpendCommand(text);
+  if(discSpend){ addLocalAiSuggestions([discSpend]); return true; }
+
+  const savingsAdd=parseLocalSavingsAddCommand(text);
+  if(savingsAdd){ addLocalAiSuggestions([savingsAdd]); return true; }
+
   const raw=(text||'').trim(), n=normalizeHU(raw);
 
   const cats=[
@@ -3207,7 +3268,7 @@ async function sendAiMessage(){
 
     const history=App.state.aiChat.slice(-10).map(m=>({role:m.role,content:m.content}));
     const data = await callMotivAI({
-      model:'claude-sonnet-4-6',
+      model:'claude-haiku-4-5-20251001',
       max_tokens:1000,
       system:AI_SYSTEM+'\n\nAktuális kontextus:\n'+buildAiContext(),
       messages:history
