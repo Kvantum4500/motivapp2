@@ -12,6 +12,15 @@ import android.service.notification.StatusBarNotification
  * is not one of exactly three hardcoded sources below. No storage, no logging, no
  * processing of any kind happens for anything else.
  *
+ * [onNotificationPosted] alone only ever sees notifications posted AFTER this listener
+ * is connected - a bank/Foodora notification that arrived before the user granted
+ * notification access, or before the OS finished rebinding the listener after a reboot
+ * or an app update, would never reach it and would be silently missed forever (the
+ * notification itself stays sitting in the shade, but this service never gets told
+ * about it again). [onListenerConnected] closes that gap: it runs once, right after the
+ * OS finishes connecting this listener, and backfills anything already active at that
+ * moment through the exact same [onNotificationPosted] path.
+ *
  * This allow-list is intentionally compiled-in and there is intentionally no in-app
  * settings UI to change it, ever - see the class-level comment on the manifest
  * declaration of this service for how a user actually grants it notification access.
@@ -73,6 +82,31 @@ class NotificationForwarderService : NotificationListenerService() {
             val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
             val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString().orEmpty()
             return listOf(title, text, bigText).filter { it.isNotBlank() }.joinToString(" ")
+        }
+    }
+
+    /** Backfills already-active (not yet dismissed) notifications from the allow-listed
+     * packages the moment this listener connects - see the class-level doc for why this
+     * is needed. [getActiveNotifications] can include notifications posted long before
+     * this connection (they were simply sitting in the shade the whole time); that is
+     * intentional here - the user wants historical, still-visible notifications caught
+     * too, not just ones posted from this exact moment forward. Processed oldest-first
+     * (by [StatusBarNotification.getPostTime]) through the normal [onNotificationPosted]
+     * path, so if more than one matching notification is active at once, the LAST one
+     * processed (the most recently posted) is the one that ends up as the stored pending
+     * record - the same "latest wins" behavior a real-time stream of postings would give,
+     * since [PendingNotificationStore] only ever holds one record per type. */
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        try {
+            activeNotifications
+                ?.filter { it.packageName in BANK_PACKAGES || it.packageName == PACKAGE_FOODORA }
+                ?.sortedBy { it.postTime }
+                ?.forEach { sbn -> onNotificationPosted(sbn) }
+        } catch (e: SecurityException) {
+            // Some OEM builds can throw here if the connection isn't fully settled yet
+            // despite onListenerConnected() having fired - not fatal, the next genuine
+            // onNotificationPosted() event still reaches this service normally either way.
         }
     }
 
