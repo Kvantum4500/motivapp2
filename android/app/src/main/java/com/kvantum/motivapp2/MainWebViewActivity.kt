@@ -225,15 +225,18 @@ class MainWebViewActivity : ComponentActivity() {
             }
 
             // checkPendingNotifications() must NOT run until the page's own script has
-            // actually executed and defined window.onBankNotification/onFoodoraNotification
+            // actually executed and defined window.onBankNotifications/onFoodoraNotifications
             // - calling it any earlier (e.g. right after loadUrl(), which only starts an
-            // async load) means NativeBridge.onBankNotification's evaluateJavascript call
+            // async load) means NativeBridge.onBankNotifications's evaluateJavascript call
             // hits a ReferenceError inside the WebView (silently swallowed, since its
-            // callback is null), while the pending record still gets deleted right after
-            // regardless of whether the JS call succeeded - silently destroying the
-            // notification data on cold start, before the user ever sees the confirmation
-            // sheet. onPageFinished only fires once the main frame (including its top-level
-            // script) has finished loading, so by then the callbacks are guaranteed defined.
+            // callback is null). That is harmless now (unlike the old single-record
+            // implementation): records are only ever cleared from PendingNotificationStore
+            // once the page explicitly acknowledges one (see NativeBridge), so a call that
+            // lands too early to be seen by the page simply gets redelivered on the next
+            // checkPendingNotifications() (e.g. onResume(), right after this early one on a
+            // cold start). onPageFinished only fires once the main frame (including its
+            // top-level script) has finished loading, so by then the callbacks are
+            // guaranteed defined and this call is guaranteed to actually reach the page.
             override fun onPageFinished(view: WebView, url: String?) {
                 super.onPageFinished(view, url)
                 checkPendingNotifications()
@@ -336,7 +339,9 @@ class MainWebViewActivity : ComponentActivity() {
             @Suppress("DEPRECATION")
             registerReceiver(pendingNotificationReceiver, filter)
         }
-        // In case a notification arrived while the app was backgrounded (but still alive).
+        // Covers a notification that arrived while the app was backgrounded (but still
+        // alive), AND - via checkPendingNotifications()'s own on-demand scan - anything
+        // simply already sitting unprocessed in the shade from before the app was opened.
         checkPendingNotifications()
     }
 
@@ -395,16 +400,31 @@ class MainWebViewActivity : ComponentActivity() {
         }
     }
 
-    /** Called on the UI thread from onCreate/onResume and from
+    /** Called on the UI thread from onPageFinished/onResume, from
      * [pendingNotificationReceiver] (a foregrounded app gets notified promptly of a
-     * new pending record via the broadcast NotificationForwarderService sends). */
-    private fun checkPendingNotifications() {
-        PendingNotificationStore.getPendingBankRecord(applicationContext)?.let { record ->
-            nativeBridge.onBankNotification(record.amount, record.rawText, record.sourcePackage)
-        }
-        PendingNotificationStore.getPendingFoodRecord(applicationContext)?.let { record ->
-            nativeBridge.onFoodoraNotification(record.amount, record.rawText)
-        }
+     * new pending record via the broadcast NotificationForwarderService sends), and from
+     * [NotificationAccessBridge.testScanNow] (`internal`, not `private`, exactly so that
+     * bridge - same package, Integrációk view's manual test button - can trigger an
+     * immediate delivery of whatever its own manual scan just queued, instead of the
+     * queue only reaching the page on the next natural resume).
+     *
+     * Starts with an on-demand [NotificationForwarderService.scanActiveNotifications]
+     * pass (a no-op if [NotificationForwarderService.instance] is null, i.e. the
+     * listener isn't currently connected - same as before this method existed) so that
+     * simply opening/resuming the app picks up whatever is already sitting unprocessed
+     * in the notification shade, not just notifications that happen to arrive - or a
+     * listener reconnect that happens to occur - while the app is already foregrounded.
+     * Doing this here, rather than only at the one call site in onResume(), means every
+     * caller benefits and a cold start (onPageFinished) also gets a fresh scan; running
+     * it more than once in quick succession (e.g. onResume() right after
+     * onNotificationPosted's own broadcast) is harmless, since
+     * PendingNotificationStore dedupes by postTime. */
+    internal fun checkPendingNotifications() {
+        NotificationForwarderService.instance?.scanActiveNotifications()
+        val bankRecords = PendingNotificationStore.getPendingBankRecords(applicationContext)
+        if (bankRecords.isNotEmpty()) nativeBridge.onBankNotifications(bankRecords)
+        val foodRecords = PendingNotificationStore.getPendingFoodRecords(applicationContext)
+        if (foodRecords.isNotEmpty()) nativeBridge.onFoodoraNotifications(foodRecords)
     }
 
     companion object {
