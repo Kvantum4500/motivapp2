@@ -565,8 +565,23 @@ function saveState(){
    clone-nal IndexedDB-be igen). Minden IndexedDB hívás try/catch-elve
    van: bármilyen hiba esetén úgy viselkedünk, mintha nem lenne elmentett
    handle — ez sosem dobhat el nem kapott hibát, és sosem akaszthatja meg
-   a mentést/betöltést. */
-const hasFSAccess = typeof window.showSaveFilePicker === 'function' && typeof window.showOpenFilePicker === 'function';
+   a mentést/betöltést.
+
+   isNativeApp/hasFSAccess sorrendje SZÁNDÉKOS: a natív Android app saját,
+   megbízható AndroidBackup/onShowFileChooser hidat ad (ld. lejjebb), ami
+   mindig működik. Néhány újabb Android WebView build viszont MAGÁT a
+   showSaveFilePicker/showOpenFilePicker függvényt is definiálja, de a
+   WebView-nak nincs hozzá saját UI-ja a fájlválasztó/engedély-párbeszéd
+   megjelenítésére - a hívás emiatt sem nem teljesül, sem el nem utasítja
+   magát, hanem VÉGLEGESEN FÜGGŐBEN marad (a Promise se nem resolve-ol,
+   se nem reject-ál), ami a felhasználó számára "a gomb semmit nem csinál"
+   -ként jelentkezik (ellentétben egy dobott hibával, amit a catch ág már
+   kezel). Mivel a natív hidak megléte önmagában bizonyítja, hogy natív
+   appban futunk, ott sose próbálkozzunk a bizonytalan FS Access API-val -
+   a hasFSAccess csak böngészőben/telepített webes (TWA) verzióban, natív
+   híd hiányában lehet igaz. */
+const isNativeApp = typeof window.AndroidBackup !== 'undefined' && !!window.AndroidBackup;
+const hasFSAccess = !isNativeApp && typeof window.showSaveFilePicker === 'function' && typeof window.showOpenFilePicker === 'function';
 const FS_DB_NAME = 'motivapp-fs', FS_STORE_NAME = 'handles', FS_HANDLE_KEY = 'backupFile';
 function _openFsDb(){
   return new Promise((resolve,reject)=>{
