@@ -9,8 +9,8 @@ import android.service.notification.StatusBarNotification
  * Receives every notification posted on the device (that's how
  * [NotificationListenerService] works - there is no way to subscribe to only some
  * packages at the OS level) and immediately discards anything whose [sbn.packageName]
- * is not one of exactly three hardcoded sources below. No storage, no logging, no
- * processing of any kind happens for anything else.
+ * is not one of the hardcoded sources below. No storage, no logging, no processing of
+ * any kind happens for anything else.
  *
  * [onNotificationPosted] alone only ever sees notifications posted AFTER this listener
  * is connected - a bank/Foodora notification that arrived before the user granted
@@ -33,6 +33,20 @@ import android.service.notification.StatusBarNotification
  *  - K&H Bank: hu.khb
  *  - UniCredit Bank Hungary: hr.asseco.android.jimba.mUCI.hu
  *  - Foodora: se.onlinepizza
+ *
+ * IMPORTANT, discovered from a real device screenshot: for a contactless (NFC tap-to-pay)
+ * card provisioned into Google Wallet, the transaction notification the user actually
+ * receives and sees ("730,00 Ft a következővel: K&H Mastercard alap ••6491") comes from
+ * GOOGLE WALLET, not from the K&H app itself - K&H's own app notifications (per its
+ * "KiberPajzs" feature) deliberately carry no transaction amount at all, for security
+ * reasons, so they could never have worked for this purpose regardless of any code
+ * change here. [PACKAGE_GOOGLE_WALLET] below is the standard, long-stable Google
+ * Wallet/Google Pay NFC package id - UNLIKE the three above, this one has NOT yet been
+ * confirmed by the user against their own device's actual installed package (Settings ->
+ * Alkalmazások -> Google Wallet -> the package name is shown on that screen, or share the
+ * app's Play Store listing - the link contains "id=<package>"). If the manual test button
+ * (Integrációk) still finds 0 candidates after this ships, that ID is the first thing to
+ * verify/correct.
  */
 class NotificationForwarderService : NotificationListenerService() {
 
@@ -40,8 +54,10 @@ class NotificationForwarderService : NotificationListenerService() {
         private const val PACKAGE_KH_BANK = "hu.khb"
         private const val PACKAGE_UNICREDIT_BANK_HU = "hr.asseco.android.jimba.mUCI.hu"
         private const val PACKAGE_FOODORA = "se.onlinepizza"
+        private const val PACKAGE_GOOGLE_WALLET = "com.google.android.apps.walletnfcrel"
 
-        private val BANK_PACKAGES: Set<String> = setOf(PACKAGE_KH_BANK, PACKAGE_UNICREDIT_BANK_HU)
+        private val BANK_PACKAGES: Set<String> =
+            setOf(PACKAGE_KH_BANK, PACKAGE_UNICREDIT_BANK_HU, PACKAGE_GOOGLE_WALLET)
 
         /** Broadcast sent (to this app's own package only) after a pending record is written,
          * so an already-foregrounded MainWebViewActivity can pick it up immediately instead
