@@ -223,6 +223,21 @@ class MainWebViewActivity : ComponentActivity() {
                     true
                 }
             }
+
+            // checkPendingNotifications() must NOT run until the page's own script has
+            // actually executed and defined window.onBankNotification/onFoodoraNotification
+            // - calling it any earlier (e.g. right after loadUrl(), which only starts an
+            // async load) means NativeBridge.onBankNotification's evaluateJavascript call
+            // hits a ReferenceError inside the WebView (silently swallowed, since its
+            // callback is null), while the pending record still gets deleted right after
+            // regardless of whether the JS call succeeded - silently destroying the
+            // notification data on cold start, before the user ever sees the confirmation
+            // sheet. onPageFinished only fires once the main frame (including its top-level
+            // script) has finished loading, so by then the callbacks are guaranteed defined.
+            override fun onPageFinished(view: WebView, url: String?) {
+                super.onPageFinished(view, url)
+                checkPendingNotifications()
+            }
         }
 
         webView.webChromeClient = object : WebChromeClient() {
@@ -300,9 +315,8 @@ class MainWebViewActivity : ComponentActivity() {
         webView.addJavascriptInterface(MapsBridge(this, webView), "AndroidMaps")
 
         webView.loadUrl(LAUNCH_URL)
-
-        // In case a notification arrived while the app wasn't running at all.
-        checkPendingNotifications()
+        // Any pending record from before the app was running is delivered once the page
+        // finishes loading - see the WebViewClient.onPageFinished override above.
     }
 
     override fun onStart() {
