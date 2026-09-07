@@ -3,7 +3,6 @@ package com.kvantum.motivapp2
 import android.content.Intent
 import android.provider.Settings
 import android.webkit.JavascriptInterface
-import androidx.activity.ComponentActivity
 import androidx.core.app.NotificationManagerCompat
 import org.json.JSONObject
 
@@ -27,7 +26,7 @@ import org.json.JSONObject
  * értesítés-lista újra-átvizsgálása - nem ad semmilyen ÚJ jogosultságot vagy
  * hozzáférést a webes oldalnak.
  */
-class NotificationAccessBridge(private val activity: ComponentActivity) {
+class NotificationAccessBridge(private val activity: MainWebViewActivity) {
 
     @JavascriptInterface
     fun isAccessGranted(): Boolean {
@@ -53,6 +52,13 @@ class NotificationAccessBridge(private val activity: ComponentActivity) {
      * listenerConnected:false jön vissza - ilyenkor a webes oldal javasolhatja az app
      * újraindítását vagy egy pillanatnyi várakozást.
      *
+     * Sikeres szkennelés után (listener csatlakoztatva) rögtön meg is hívja
+     * [MainWebViewActivity.checkPendingNotifications]-t, hogy a most bekerült (vagy már
+     * korábban is várakozó, még nem nyugtázott) rekordok azonnal, a gomb megnyomásának
+     * eredményeként megjelenjenek a jóváhagyó lapokon - nem csak a következő natural
+     * app-megnyitáskor/resume-nál -, így a kézi teszt-gomb legalább annyira hasznos marad,
+     * mint az automatikus resume-alapú felismerés.
+     *
      * A teljes törzs try/catch-ben fut: [NotificationForwarderService.scanActiveNotifications]
      * a [PendingNotificationStore]-on keresztül a titkosított tárolót is írhatja, ami
      * elméletileg (pl. Keystore-probléma esetén) más kivételt is dobhat, mint a már ott
@@ -77,6 +83,19 @@ class NotificationAccessBridge(private val activity: ComponentActivity) {
             result.put("listenerConnected", true)
             result.put("candidatesFound", scan.candidatesFound)
             result.put("savedCount", scan.savedCount)
+            // Deliver the (now possibly updated) queues to the page right away - see the
+            // doc comment above. checkPendingNotifications() itself re-runs
+            // scanActiveNotifications() once more, but that's a harmless dedup no-op;
+            // simpler and safer than duplicating its record-reading/JS-delivery logic here.
+            // Own try/catch: a delivery hiccup here must not clobber the scan result
+            // above, which already succeeded and is worth reporting regardless.
+            try {
+                activity.checkPendingNotifications()
+            } catch (e: Exception) {
+                // Ignored - the scan itself (reflected in `result` already) still
+                // succeeded; the queued records simply get delivered on the next natural
+                // checkPendingNotifications() call (e.g. the next resume) instead.
+            }
         } catch (e: Exception) {
             result.put("listenerConnected", false)
             result.put("candidatesFound", 0)

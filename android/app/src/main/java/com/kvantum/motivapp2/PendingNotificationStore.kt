@@ -4,40 +4,66 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import org.json.JSONArray
+import org.json.JSONException
+import org.json.JSONObject
 
 /**
- * Genuinely-temporary holding spot for at most one pending bank-transaction record and
- * one pending food-order record, encrypted at rest with an Android-Keystore-backed
- * AES-256-GCM key via Jetpack Security Crypto (androidx.security.crypto).
+ * Genuinely-temporary holding spot for pending bank-transaction records and pending
+ * food-order records, encrypted at rest with an Android-Keystore-backed AES-256-GCM key
+ * via Jetpack Security Crypto (androidx.security.crypto).
+ *
+ * Each type (bank, food) holds a QUEUE of records, not just one - a neglected
+ * notification shade can easily have several distinct unprocessed bank/Foodora
+ * notifications sitting in it at once (confirmed via a real user screenshot: 5 at once,
+ * from different merchants/times), and every one of them represents real spending the
+ * user should get a chance to confirm, not just the single most recently seen one. The
+ * whole queue is stored as one JSON array (org.json, same approach already used
+ * elsewhere in this codebase, e.g. NotificationAccessBridge) inside a single encrypted
+ * string value per type - EncryptedSharedPreferences only encrypts individual string
+ * values, not a native list type, so this is the natural way to keep a queue under that
+ * same encryption.
  *
  * A record only ever gets here after NotificationForwarderService has already checked,
  * in plaintext and before this class is ever touched, that the notification looks like
  * it carries a usable amount - this class has no idea what "looks usable" means and
  * never sees an unfiltered notification.
  *
- * Records are cleared as soon as MainWebViewActivity/NativeBridge has handed them to the
- * web app (see NativeBridge.onBankNotification / onFoodoraNotification) - they are never
- * retained any longer than that, and there is no history/log of past records.
+ * Dedup key: [PendingRecord.postTime], threaded through from the originating
+ * [android.service.notification.StatusBarNotification.getPostTime] (NOT
+ * System.currentTimeMillis() at save time) - the same still-active notification can
+ * legitimately be seen more than once (once via the real-time onNotificationPosted
+ * callback, then again later via a scanActiveNotifications() re-scan while it is still
+ * sitting, unconfirmed, in the shade), and postTime is the one natural, stable-per-
+ * posted-notification identifier available to recognize "already queued this one" and
+ * avoid piling up duplicate entries for it.
+ *
+ * A record is removed ONLY once the web app has told native (via
+ * NativeBridge.acknowledgeBankNotification/acknowledgeFoodoraNotification) that the user
+ * actually acted on it - confirmed ("Mentés") OR explicitly dismissed (closed its
+ * confirmation sheet without saving) - never merely because it was handed to the page.
+ * That way, if the app is killed mid-review, nothing already-shown-but-not-yet-decided
+ * is lost: it is simply offered again the next time the queue is delivered.
+ *
+ * Each queue is capped at [MAX_RECORDS_PER_TYPE], oldest-dropped-first, matching this
+ * codebase's existing convention of capping other unbounded arrays (e.g.
+ * App.state.finance.spendLedger caps at 500 entries in index.html) - so a badly
+ * neglected notification shade can't grow the encrypted store unboundedly.
  */
 object PendingNotificationStore {
 
     private const val PREFS_FILE_NAME = "motivapp2_pending_notifications"
 
-    private const val KEY_BANK_AMOUNT = "pending_bank_amount"
-    private const val KEY_BANK_RAW_TEXT = "pending_bank_raw_text"
-    private const val KEY_BANK_SOURCE_PACKAGE = "pending_bank_source_package"
-    private const val KEY_BANK_TIMESTAMP = "pending_bank_timestamp"
+    private const val KEY_BANK_RECORDS = "pending_bank_records_json"
+    private const val KEY_FOOD_RECORDS = "pending_food_records_json"
 
-    private const val KEY_FOOD_AMOUNT = "pending_food_amount"
-    private const val KEY_FOOD_RAW_TEXT = "pending_food_raw_text"
-    private const val KEY_FOOD_SOURCE_PACKAGE = "pending_food_source_package"
-    private const val KEY_FOOD_TIMESTAMP = "pending_food_timestamp"
+    private const val MAX_RECORDS_PER_TYPE = 20
 
     data class PendingRecord(
+        val postTime: Long,
         val amount: Double,
         val rawText: String,
-        val sourcePackage: String,
-        val timestamp: Long
+        val sourcePackage: String
     )
 
     @Volatile
@@ -63,63 +89,102 @@ object PendingNotificationStore {
         }
     }
 
+    /** Appends a new pending bank record, deduped by [postTime]. Returns true iff a new
+     * entry was actually added (false if [postTime] was already queued - a re-scan
+     * seeing the same still-active notification again, not a new one). */
     @Synchronized
-    fun savePendingBankRecord(context: Context, amount: Double, rawText: String, sourcePackage: String) {
-        prefs(context).edit()
-            .putString(KEY_BANK_AMOUNT, amount.toString())
-            .putString(KEY_BANK_RAW_TEXT, rawText)
-            .putString(KEY_BANK_SOURCE_PACKAGE, sourcePackage)
-            .putLong(KEY_BANK_TIMESTAMP, System.currentTimeMillis())
-            .apply()
-    }
+    fun addPendingBankRecord(
+        context: Context,
+        postTime: Long,
+        amount: Double,
+        rawText: String,
+        sourcePackage: String
+    ): Boolean = addRecord(context, KEY_BANK_RECORDS, postTime, amount, rawText, sourcePackage)
+
+    /** Same as [addPendingBankRecord] but for the food (Foodora) queue. */
+    @Synchronized
+    fun addPendingFoodRecord(
+        context: Context,
+        postTime: Long,
+        amount: Double,
+        rawText: String,
+        sourcePackage: String
+    ): Boolean = addRecord(context, KEY_FOOD_RECORDS, postTime, amount, rawText, sourcePackage)
 
     @Synchronized
-    fun getPendingBankRecord(context: Context): PendingRecord? {
+    fun getPendingBankRecords(context: Context): List<PendingRecord> =
+        readRecords(prefs(context), KEY_BANK_RECORDS)
+
+    @Synchronized
+    fun getPendingFoodRecords(context: Context): List<PendingRecord> =
+        readRecords(prefs(context), KEY_FOOD_RECORDS)
+
+    /** Removes exactly one bank record by [postTime] - call only once the user has
+     * actually acted on it (see class doc comment). A no-op if it is already gone
+     * (e.g. acknowledged twice, or the queue was cleared some other way). */
+    @Synchronized
+    fun removePendingBankRecord(context: Context, postTime: Long) =
+        removeRecord(context, KEY_BANK_RECORDS, postTime)
+
+    @Synchronized
+    fun removePendingFoodRecord(context: Context, postTime: Long) =
+        removeRecord(context, KEY_FOOD_RECORDS, postTime)
+
+    private fun addRecord(
+        context: Context,
+        key: String,
+        postTime: Long,
+        amount: Double,
+        rawText: String,
+        sourcePackage: String
+    ): Boolean {
         val p = prefs(context)
-        val rawText = p.getString(KEY_BANK_RAW_TEXT, null) ?: return null
-        val amount = p.getString(KEY_BANK_AMOUNT, null)?.toDoubleOrNull() ?: 0.0
-        val sourcePackage = p.getString(KEY_BANK_SOURCE_PACKAGE, "") ?: ""
-        val timestamp = p.getLong(KEY_BANK_TIMESTAMP, 0L)
-        return PendingRecord(amount, rawText, sourcePackage, timestamp)
+        val list = readRecords(p, key).toMutableList()
+        if (list.any { it.postTime == postTime }) return false
+        list.add(PendingRecord(postTime, amount, rawText, sourcePackage))
+        list.sortBy { it.postTime }
+        // Oldest-dropped-first once over the cap - see class doc comment.
+        while (list.size > MAX_RECORDS_PER_TYPE) list.removeAt(0)
+        p.edit().putString(key, recordsToJson(list)).apply()
+        return true
     }
 
-    @Synchronized
-    fun clearPendingBankRecord(context: Context) {
-        prefs(context).edit()
-            .remove(KEY_BANK_AMOUNT)
-            .remove(KEY_BANK_RAW_TEXT)
-            .remove(KEY_BANK_SOURCE_PACKAGE)
-            .remove(KEY_BANK_TIMESTAMP)
-            .apply()
-    }
-
-    @Synchronized
-    fun savePendingFoodRecord(context: Context, amount: Double, rawText: String, sourcePackage: String) {
-        prefs(context).edit()
-            .putString(KEY_FOOD_AMOUNT, amount.toString())
-            .putString(KEY_FOOD_RAW_TEXT, rawText)
-            .putString(KEY_FOOD_SOURCE_PACKAGE, sourcePackage)
-            .putLong(KEY_FOOD_TIMESTAMP, System.currentTimeMillis())
-            .apply()
-    }
-
-    @Synchronized
-    fun getPendingFoodRecord(context: Context): PendingRecord? {
+    private fun removeRecord(context: Context, key: String, postTime: Long) {
         val p = prefs(context)
-        val rawText = p.getString(KEY_FOOD_RAW_TEXT, null) ?: return null
-        val amount = p.getString(KEY_FOOD_AMOUNT, null)?.toDoubleOrNull() ?: 0.0
-        val sourcePackage = p.getString(KEY_FOOD_SOURCE_PACKAGE, "") ?: ""
-        val timestamp = p.getLong(KEY_FOOD_TIMESTAMP, 0L)
-        return PendingRecord(amount, rawText, sourcePackage, timestamp)
+        val list = readRecords(p, key).filterNot { it.postTime == postTime }
+        p.edit().putString(key, recordsToJson(list)).apply()
     }
 
-    @Synchronized
-    fun clearPendingFoodRecord(context: Context) {
-        prefs(context).edit()
-            .remove(KEY_FOOD_AMOUNT)
-            .remove(KEY_FOOD_RAW_TEXT)
-            .remove(KEY_FOOD_SOURCE_PACKAGE)
-            .remove(KEY_FOOD_TIMESTAMP)
-            .apply()
+    private fun readRecords(p: SharedPreferences, key: String): List<PendingRecord> {
+        val raw = p.getString(key, null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                PendingRecord(
+                    postTime = o.optLong("postTime", 0L),
+                    amount = o.optDouble("amount", 0.0),
+                    rawText = o.optString("rawText", ""),
+                    sourcePackage = o.optString("sourcePackage", "")
+                )
+            }
+        } catch (e: JSONException) {
+            // Corrupt/unexpected stored value (shouldn't normally happen - only this
+            // class ever writes this key) - treat as an empty queue rather than crashing.
+            emptyList()
+        }
+    }
+
+    private fun recordsToJson(records: List<PendingRecord>): String {
+        val arr = JSONArray()
+        records.forEach { r ->
+            val o = JSONObject()
+            o.put("postTime", r.postTime)
+            o.put("amount", r.amount)
+            o.put("rawText", r.rawText)
+            o.put("sourcePackage", r.sourcePackage)
+            arr.put(o)
+        }
+        return arr.toString()
     }
 }

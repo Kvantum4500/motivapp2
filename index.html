@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.16';
+const APP_VERSION = '2.2.17';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.16';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.17';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -754,7 +754,19 @@ function openSheet(html){
   document.getElementById('sheetbg').classList.add('open');
   document.querySelector('#sheet button, #sheet input, #sheet textarea, #sheet select')?.focus();
 }
-function closeSheet(){ document.getElementById('sheetbg').classList.remove('open'); }
+/* closeSheet() is the single, shared exit point for every sheet in the app - the ✕
+   buttons, tapping the dim backdrop (see the sheetbg click listener below), AND (for the
+   native bank/Foodora notification queue specifically) the explicit "Mentés" save path,
+   which calls _finishActiveNotifQueueItem(true) before calling this. Because of that, this
+   function doubles as the queue's "a sheet just stopped being shown" hook: when
+   _activeNotifQueueItem is still set here, closeSheet() was reached WITHOUT that explicit
+   acknowledgement first (i.e. the ✕ button or an outside tap) - see _activeNotifQueueItem's
+   own comment for why that case is handled as an in-session-only, non-native-acknowledged
+   dismiss rather than a plain close. */
+function closeSheet(){
+  if(_activeNotifQueueItem){ _finishActiveNotifQueueItem(false); return; }
+  document.getElementById('sheetbg').classList.remove('open');
+}
 document.getElementById('sheetbg').addEventListener('click',e=>{ if(e.target.id==='sheetbg') closeSheet(); });
 /* Globális [data-click] delegálás — egyszerű, legfeljebb 2 pozicionális
    (data-id/data-id2) string-argumentumot váró műveletekhez (pl. küldetés
@@ -4134,32 +4146,125 @@ function saveSpend(id){
 }
 
 /* ===== NATÍV ÉRTESÍTÉS-HÍDOK (Android WebView.evaluateJavascript hívja) =====
-   window.onBankNotification / window.onFoodoraNotification: a natív oldal
-   már leszűrt, adott csomagból érkező push-értesítést jelez ide, a benne
-   feltételezett összeggel és a nyers szöveggel. A `amount` MINDIG csak
-   előtöltési javaslat - soha nem írunk vele állapotot a felhasználó
-   kifejezett "Mentés" kattintása nélkül. Érvénytelen/hiányzó összeg esetén
-   is megnyílik a lap, csak üresen/0-val előtöltve, hogy a felhasználó
-   kézzel be tudja írni. */
+   window.onBankNotifications / window.onFoodoraNotifications: a natív oldal a
+   PendingNotificationStore-ban (natív oldal, titkosítva) várakozó, adott csomagból
+   érkező push-értesítéseket jelzi ide EGYETLEN hívásban, JSON tömbként - lásd
+   NativeBridge.kt. A régi (v2.2.16 előtti) egyes-számú window.onBankNotification /
+   window.onFoodoraNotification hívás CSAK egyetlen rekordot adott át, és a natív oldal
+   AZONNAL törölte is a natív tárolóból, mihelyt átadta - emiatt egy neglektált
+   értesítési sávban egyszerre több banki/Foodora értesítés ülhetett, de csak a
+   LEGUTOLSÓ maradt meg, a többi némán elveszett (lásd git history). A többes szám
+   szándékosan más függvénynevet ad, nehogy összekeveredjen/csendben ütközzön a régi,
+   egyes-számú kontraktussal.
+   A `amount` MINDIG csak előtöltési javaslat - soha nem írunk vele állapotot a
+   felhasználó kifejezett "Mentés" kattintása nélkül. Érvénytelen/hiányzó összeg esetén
+   is megnyílik a lap, csak üresen/0-val előtöltve, hogy a felhasználó kézzel be tudja
+   írni.
+   Mivel egyszerre több rekord is várakozhat, de egyszerre csak EGY jóváhagyó lap
+   látható (openSheet() mindig felülírja az előzőt), az összes bejövő rekord egy közös,
+   csak-memóriabeli munkamenet-sorba (_notifQueue) kerül, és _advanceNotifQueue() mindig
+   csak a sor ELSŐ elemét jeleníti meg - a következő csak azután, hogy a felhasználó
+   ténylegesen döntött (Mentés VAGY explicit bezárás) a jelenleg látszóról. Egy rekord a
+   NATÍV tárolóból is csak ekkor, a döntés után törlődik (NativeBridge.acknowledge*
+   hívással) - ha az app menet közben leáll, a még el nem döntött rekordok a natív
+   oldalon megmaradnak, és a következő indításkor/resume-nál újra felajánlásra kerülnek. */
+let _notifQueue = []; // {type:'bank'|'food', postTime, amount, rawText, sourcePackage}[] - munkamenet-beli, nem perzisztens: az igazság forrása mindig a natív PendingNotificationStore.
+/* A jelenleg látható jóváhagyó lap sorbeli eleme (vagy null, ha az épp nyitott sheet
+   nem egy natív értesítés-sorból származik). closeSheet() ezt vizsgálja: ha ki van
+   töltve, a sheet bezárása (✕ vagy a hátteret érintve) IMPLICIT, natívan NEM nyugtázott
+   elvetésnek számít - a felhasználó explicit döntéshozatalt igénylő invariánsa miatt a
+   rekord natívan megmarad "várakozó"-ként, csak ebből a munkamenet-sorból kerül ki (hogy
+   a sorban lévő többi elem még megjelenhessen most), és a következő app-megnyitáskor
+   újra felajánlásra kerül. */
+let _activeNotifQueueItem = null;
+
+function _enqueueNotifRecords(type, recordsJson){
+  let records;
+  try{ records = JSON.parse(recordsJson); }catch(e){ records = null; }
+  if(!Array.isArray(records)) return;
+  records.forEach(r=>{
+    if(!r || typeof r.postTime!=='number') return;
+    // Dedup: a natív oldal is elvileg csak egyszer küld egy adott postTime-ot, de egy
+    // korábbi, még fel nem dolgozott hívás után érkező második push (pl. resume + kézi
+    // teszt-gomb gyors egymásutánban) ugyanazt a rekordot még nem-nyugtázott állapotban
+    // újra elküldheti - ezt itt, a sorba állítás előtt szűrjük ki, hogy ne jelenjen meg
+    // kétszer ugyanaz a lap.
+    if(_notifQueue.some(q=>q.type===type && q.postTime===r.postTime)) return;
+    if(_activeNotifQueueItem && _activeNotifQueueItem.type===type && _activeNotifQueueItem.postTime===r.postTime) return;
+    _notifQueue.push({type, postTime:r.postTime, amount:r.amount, rawText:r.rawText||'', sourcePackage:r.sourcePackage||''});
+  });
+}
+window.onBankNotifications = function(recordsJson){
+  _enqueueNotifRecords('bank', recordsJson);
+  _advanceNotifQueue();
+};
+window.onFoodoraNotifications = function(recordsJson){
+  _enqueueNotifRecords('food', recordsJson);
+  _advanceNotifQueue();
+};
+/* Megjeleníti a sor élén álló elemet, ha épp nincs már megjelenítve egy natív-sorból
+   származó lap. Sorrend: a queue mindig postTime szerint növekvő sorrendben érkezik a
+   natív oldalról (lásd NotificationForwarderService.scanActiveNotifications), és csak a
+   végére fűzünk hozzá (_enqueueNotifRecords), úgyhogy a sor eleje mindig a
+   legrégebbi, még el nem döntött rekord - a felhasználó időrendben, egyesével látja
+   őket. */
+function _advanceNotifQueue(){
+  if(_activeNotifQueueItem) return; // már látszik egy lap - a következő csak annak lezárása után jön
+  const next = _notifQueue[0];
+  if(!next) return;
+  _activeNotifQueueItem = next;
+  const amt = (typeof next.amount==='number' && isFinite(next.amount) && next.amount!==0) ? Math.abs(next.amount) : '';
+  if(next.type==='bank') openBankNotificationSheet(amt, next.rawText);
+  else openFoodoraOrderSheet(amt, next.rawText);
+}
+/* A jelenleg nyitott, natív-sorból származó lap lezárása.
+   acknowledge=true: a felhasználó ténylegesen döntött (Mentés) - natívan is nyugtázzuk
+     (NativeBridge.acknowledge{Bank,Foodora}Notification), így a rekord VÉGLEGESEN törlődik
+     a natív PendingNotificationStore-ból is, nem csak ebből a munkamenet-sorból.
+   acknowledge=false: a felhasználó explicit bezárta a lapot (✕ / háttérre koppintás)
+     anélkül, hogy mentett volna - lásd _activeNotifQueueItem doksija: NEM nyugtázunk
+     natívan, a rekord ott marad "várakozó"-ként a legközelebbi app-nyitásig/resume-ig,
+     csak a munkamenet-sorból esik ki, hogy a többi elem most is megjelenhessen.
+   Mindkét esetben: ha van még elem a sorban, nem zárjuk be ténylegesen a sheet
+   hátterét, hanem egyből a következő lap tartalmára váltunk (nincs villódzó
+   becsukás-újranyitás); ha nincs több, ténylegesen bezárjuk. */
+function _finishActiveNotifQueueItem(acknowledge){
+  const item = _activeNotifQueueItem;
+  if(item){
+    if(acknowledge){
+      try{
+        if(item.type==='bank' && window.NativeBridge && typeof window.NativeBridge.acknowledgeBankNotification==='function'){
+          window.NativeBridge.acknowledgeBankNotification(item.postTime);
+        }else if(item.type==='food' && window.NativeBridge && typeof window.NativeBridge.acknowledgeFoodoraNotification==='function'){
+          window.NativeBridge.acknowledgeFoodoraNotification(item.postTime);
+        }
+      }catch(e){
+        // Natív híd hiba esetén sem szabad a mentést megakasztani - legfeljebb a rekord
+        // natívan is megmarad, és újra felajánlásra kerül legközelebb (ártalmatlan, csak
+        // egy felesleges, dedupolt ismétlődés).
+      }
+    }
+    // A most lezárt elem mindig a sor eleje (lásd _advanceNotifQueue) - de csak akkor
+    // vesszük ki innen, ha még tényleg ott van (defenzív: elvben mindig ott van).
+    if(_notifQueue[0]===item) _notifQueue.shift();
+    _activeNotifQueueItem = null;
+  }
+  if(_notifQueue.length>0){ _advanceNotifQueue(); }
+  else { document.getElementById('sheetbg').classList.remove('open'); }
+}
 // A natív oldal egy terhelést (költést) jelző banki értesítésből a MÍNUSZ előjelet is
 // helyesen kiolvassa (pl. "-12 345 Ft" -> -12345) - ez itt a VÁRT, gyakori eset egy
 // kiadást jelző értesítésnél, nem hibás bemenet. A költés-mezőnek viszont a pozitív
 // összeg kell (mennyit adott ki a felhasználó), ezért Math.abs-szal vesszük az
 // előjel nélküli nagyságot - egy nullás/érvénytelen összegnél pedig marad az üres
 // előtöltés, hogy a felhasználó kézzel be tudja írni.
-window.onBankNotification = function(amount, rawText, sourcePackage){
-  const amt = (typeof amount==='number' && isFinite(amount) && amount!==0) ? Math.abs(amount) : '';
-  openBankNotificationSheet(amt, rawText||'');
-};
-window.onFoodoraNotification = function(amount, rawText){
-  const amt = (typeof amount==='number' && isFinite(amount) && amount!==0) ? Math.abs(amount) : '';
-  openFoodoraOrderSheet(amt, rawText||'');
-};
 function openBankNotificationSheet(amount, rawText){
   const cats = App.state.finance.discretionary;
   const chips = cats.map((x,idx)=>`<div class="chip${idx===0?' active':''}" data-id="${escapeHtml(x.id)}">${escapeHtml(x.icon||'🛍️')} ${escapeHtml(x.name)}</div>`).join('');
+  const queueHint = _notifQueue.length>1 ? `<div class="small muted" style="margin:-4px 0 10px;">${_notifQueue.length-1} további várakozó értesítés lesz felajánlva ez után.</div>` : '';
   openSheet(`<div class="sheet-head"><div class="sheet-title">Banki értesítés</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     ${rawText?`<div class="small muted" style="margin:-4px 0 10px;">${escapeHtml(String(rawText)).slice(0,140)}</div>`:''}
+    ${queueHint}
     <div class="field"><input type="number" id="bn-amount" min="0" style="font-size:20px;text-align:center;padding:16px;" value="${amount||''}" placeholder="Ft"></div>
     <div class="field"><label>Melyik kategóriába tartozik?</label>
       <div class="chiprow" id="bn-cat">${chips || '<span class="small muted">Nincs kategória felvéve - vegyél fel egyet a Pénzügyeknél.</span>'}</div>
@@ -4178,7 +4283,7 @@ function saveBankNotification(){
   if(!x){ toast('Kategória nem található'); return; }
   x.spent=(x.spent||0)+v;
   const dupWarning = recordSpendAndCheckDup(x.id, v, todayISO(), 'bank');
-  saveState(); closeSheet(); toast(dupWarning ? 'Elmentve ⚠️ '+dupWarning : 'Elmentve'); RENDERERS.finance();
+  saveState(); _finishActiveNotifQueueItem(true); toast(dupWarning ? 'Elmentve ⚠️ '+dupWarning : 'Elmentve'); RENDERERS.finance();
 }
 /* findFoodDiscretionaryCategory: a meglévő "Egyéb kategóriák" (discretionary)
    listából megkeresi az étterem/kávé jellegű tételt (alapértelmezésben
@@ -4200,8 +4305,10 @@ function openFoodoraOrderSheet(amount, rawText){
   } else {
     statusHtml = `<div class="small muted" style="margin:-4px 0 12px;">Nincs "Étterem/Kávé" jellegű kategória felvéve, vegyél fel egyet a Pénzügyeknél a mentéshez.</div>`;
   }
+  const queueHint = _notifQueue.length>1 ? `<div class="small muted" style="margin:-4px 0 10px;">${_notifQueue.length-1} további várakozó értesítés lesz felajánlva ez után.</div>` : '';
   openSheet(`<div class="sheet-head"><div class="sheet-title">Foodora rendelés</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     ${rawText?`<div class="small muted" style="margin:-4px 0 10px;">${escapeHtml(String(rawText)).slice(0,140)}</div>`:''}
+    ${queueHint}
     ${statusHtml}
     <div class="field"><input type="number" id="fo-amount" min="0" style="font-size:20px;text-align:center;padding:16px;" value="${amount||''}" placeholder="Ft"></div>
     <button class="btn btn-primary btn-block" onclick="saveFoodoraOrder()">Mentés</button>`);
@@ -4215,7 +4322,7 @@ function saveFoodoraOrder(){
   App.state.finance.foodOrders.unshift({id:uid(), amount:v, rawText:ctx.rawText||'', date:todayISO(), appliedToDiscretionaryId:x.id});
   x.spent=(x.spent||0)+v;
   const dupWarning = recordSpendAndCheckDup(x.id, v, todayISO(), 'foodora');
-  saveState(); closeSheet(); toast(dupWarning ? 'Rögzítve ⚠️ '+dupWarning : 'Rögzítve'); RENDERERS.finance();
+  saveState(); _finishActiveNotifQueueItem(true); toast(dupWarning ? 'Rögzítve ⚠️ '+dupWarning : 'Rögzítve'); RENDERERS.finance();
 }
 
 function manageDiscretionarySheet(id){

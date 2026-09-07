@@ -114,10 +114,12 @@ class NotificationForwarderService : NotificationListenerService() {
     }
 
     /** (candidatesFound = how many active notifications matched an allow-listed package,
-     * savedCount = how many of those actually carried a recognizable amount and were
-     * saved as a pending record - see [hasAmountMarker]). Exposed so both the automatic
-     * [onListenerConnected] backfill and [NotificationAccessBridge]'s manual test button
-     * can report something meaningful, not just "done". */
+     * savedCount = how many of those actually carried a recognizable amount AND were newly
+     * queued as a pending record - see [hasAmountMarker]; a candidate whose postTime was
+     * already queued from an earlier scan/live event is deduped and does NOT count towards
+     * savedCount again). Exposed so both the automatic [onListenerConnected] backfill and
+     * [NotificationAccessBridge]'s manual test button can report something meaningful, not
+     * just "done". */
     data class ScanResult(val candidatesFound: Int, val savedCount: Int)
 
     /** Re-scans whatever is CURRENTLY active (not yet dismissed) in the notification
@@ -128,11 +130,10 @@ class NotificationForwarderService : NotificationListenerService() {
      * whole time); that is intentional - both the cold-start backfill and the manual test
      * button are meant to catch historical, still-visible notifications too, not just ones
      * posted from this exact moment forward. Processed oldest-first (by
-     * [StatusBarNotification.getPostTime]), so if more than one matching notification of
-     * the same kind (bank vs. Foodora) is active at once, the LAST one processed (the most
-     * recently posted) is the one that ends up as the stored pending record - the same
-     * "latest wins" behavior a real-time stream of postings would give, since
-     * [PendingNotificationStore] only ever holds one record per type. */
+     * [StatusBarNotification.getPostTime]) purely so a queue built up from a single scan
+     * reads in chronological order for the user - every matching notification is queued
+     * (via [PendingNotificationStore], deduped by postTime), not just the most recent
+     * one; nothing is discarded just because more than one is active at once. */
     fun scanActiveNotifications(): ScanResult {
         var candidatesFound = 0
         var savedCount = 0
@@ -167,16 +168,17 @@ class NotificationForwarderService : NotificationListenerService() {
         processNotification(sbn)
     }
 
-    /** Returns true iff [sbn] was from an allow-listed package AND carried a recognizable
-     * amount, i.e. a pending record was actually saved. Shared by the real-time
+    /** Returns true iff [sbn] was from an allow-listed package, carried a recognizable
+     * amount, AND was newly queued (i.e. not a dedup no-op for a postTime already
+     * queued - see [PendingNotificationStore]). Shared by the real-time
      * [onNotificationPosted] path and the on-demand [scanActiveNotifications] backfill. */
     private fun processNotification(sbn: StatusBarNotification): Boolean {
         val packageName = sbn.packageName ?: return false
 
-        val save: (context: android.content.Context, amount: Double, rawText: String, sourcePackage: String) -> Unit =
+        val enqueue: (context: android.content.Context, postTime: Long, amount: Double, rawText: String, sourcePackage: String) -> Boolean =
             when {
-                packageName in BANK_PACKAGES -> PendingNotificationStore::savePendingBankRecord
-                packageName == PACKAGE_FOODORA -> PendingNotificationStore::savePendingFoodRecord
+                packageName in BANK_PACKAGES -> PendingNotificationStore::addPendingBankRecord
+                packageName == PACKAGE_FOODORA -> PendingNotificationStore::addPendingFoodRecord
                 else -> {
                     // Not one of the three allow-listed sources: discard immediately, no
                     // storage/logging/processing of any kind.
@@ -192,9 +194,9 @@ class NotificationForwarderService : NotificationListenerService() {
 
         val amount = extractAmount(combinedText) ?: 0.0
 
-        save(applicationContext, amount, combinedText, packageName)
-        notifyForegroundApp()
-        return true
+        val added = enqueue(applicationContext, sbn.postTime, amount, combinedText, packageName)
+        if (added) notifyForegroundApp()
+        return added
     }
 
     private fun notifyForegroundApp() {
