@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.17';
+const APP_VERSION = '2.2.18';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.17';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.18';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -1689,6 +1689,7 @@ RENDERERS.fejlodes = function(){
       <div class="subtab ${App.ui.fejlView==='skills'?'active':''}" role="button" tabindex="0" onclick="setFejlView('skills')" onkeydown="kbActivate(event,()=>setFejlView('skills'))">KÉSZSÉGEK</div>
       <div class="subtab ${App.ui.fejlView==='stats'?'active':''}" role="button" tabindex="0" onclick="setFejlView('stats')" onkeydown="kbActivate(event,()=>setFejlView('stats'))">STATISZTIKA</div>
       <div class="subtab ${App.ui.fejlView==='energia'?'active':''}" role="button" tabindex="0" onclick="setFejlView('energia')" onkeydown="kbActivate(event,()=>setFejlView('energia'))">ENERGIA</div>
+      <div class="subtab ${App.ui.fejlView==='elemzes'?'active':''}" role="button" tabindex="0" onclick="setFejlView('elemzes')" onkeydown="kbActivate(event,()=>setFejlView('elemzes'))">📊 ELEMZÉS</div>
     </div>
     <div id="fejl-content"></div>
   `;
@@ -1702,6 +1703,7 @@ function renderFejlContent(){
   if(App.ui.fejlView==='skills') return renderSkillsView(c);
   if(App.ui.fejlView==='stats') return renderStatsView(c);
   if(App.ui.fejlView==='energia') return renderEnergyView(c);
+  if(App.ui.fejlView==='elemzes') return renderElemzesView(c);
 }
 
 /* ---- Energia / Aktivitásnapló ---- */
@@ -1791,6 +1793,277 @@ function renderEnergyView(c){
       ${typeStats.length? typeStats.map(t=>`<div class="row"><span style="font-size:17px;">${escapeHtml(t.icon)}</span><div class="row-main"><div class="row-title" style="font-size:14px;">${escapeHtml(t.label)}</div><div class="row-sub">💪${t.phys} 🧠${t.ment} ❤️${t.exp} · ${t.count} alkalom${t.count<3?' (kevés adat még)':''}</div></div><span class="mono small" style="color:${t.delta>=0?'var(--trail-green)':'var(--trail-red)'};">${t.delta>=0?'+':''}${t.delta} energia</span></div>`).join('') : `<div class="small muted" style="padding:12px 0;">Rögzíts pár aktivitást, hogy lássuk a mintákat.</div>`}
     </div>
   `;
+}
+
+/* ---- Elemzés (4 read-only insight nézet, ld. RENDERERS.fejlodes 'elemzes' altab) ----
+   Mindegyik KIZÁRÓLAG a meglévő App.state adatokból számol render-időben — nem ír
+   App.state-be, és nem ad hozzá új perzisztens mezőt. isoAddDays() a kódbázis
+   dokumentált toLocalISO()-mintáját követi (ld. a fájl elején a "Timezone-konvenció"
+   fejlesztői irányelvet): SOHA nem toISOString()-ot használ. */
+function isoAddDays(iso, n){
+  const d = new Date(iso+'T00:00:00');
+  d.setDate(d.getDate()+n);
+  return toLocalISO(d);
+}
+
+/* 1) Műszaktípus szerinti pénzügy/energia elemzés (ld. backlog #33).
+   Napi átlagos "egyéb" (nem kötelező) költést és átlagos energiaváltozást mutat
+   műszaktípusonként (nappal/éjszaka/pihenő/szabi/egyéb).
+   - A költés forrása App.state.finance.spendLedger (minden source: ai/manual/bank/
+     foodora — ez már tartalmazza a foodOrders-ből eredő "foodora" tételeket is,
+     ld. recordSpendAndCheckDup() hívásait, ezért a foodOrders-t itt NEM adjuk
+     hozzá külön, hogy ne dupláznánk).
+   - A napi átlaghoz a spendLedger/activities dátumai közül a legkorábbitól a
+     legkésőbbiig (vagy máig, ha az később) tartó időszakban megszámoljuk, hány
+     nap esik az adott műszaktípusra (dayTypeFor minden napra) — ez a nevező, hogy
+     a ritkán előforduló műszaktípusok (pl. kevés "szabi" nap) ne torzítsanak.
+   - Az energiaváltozás App.state.activities-ből jön (minden bejegyzésnek van
+     energyBefore/energyAfter, ld. saveActivity/applyAiSuggestion 'activity_log'
+     és 'workout' ágai) — itt egyszerű, eseményenkénti átlagot számolunk. */
+function computeShiftTypeStats(){
+  const spend = App.state.finance.spendLedger||[];
+  const acts = App.state.activities||[];
+  const allDates = [...spend.map(s=>s.date), ...acts.map(a=>a.date)].filter(Boolean);
+  if(!allDates.length) return null;
+  const sorted = allDates.slice().sort();
+  const start = sorted[0];
+  let end = sorted[sorted.length-1];
+  const today = todayISO();
+  if(end < today) end = today;
+  const totalDays = Math.min(daysBetween(start,end)+1, 400); // biztonsági korlát nagyon régi/hibás dátumok ellen
+  const dayTypeCount = {};
+  for(let i=0;i<totalDays;i++){
+    const dt = dayTypeFor(isoAddDays(start,i));
+    dayTypeCount[dt] = (dayTypeCount[dt]||0)+1;
+  }
+  const spendSum = {};
+  spend.forEach(s=>{ if(!s.date) return; const dt=dayTypeFor(s.date); spendSum[dt]=(spendSum[dt]||0)+(s.amount||0); });
+  const energySum = {}, energyCount = {};
+  acts.forEach(a=>{
+    if(!a.date || a.energyBefore==null || a.energyAfter==null) return;
+    const dt = dayTypeFor(a.date);
+    energySum[dt] = (energySum[dt]||0)+(a.energyAfter-a.energyBefore);
+    energyCount[dt] = (energyCount[dt]||0)+1;
+  });
+  return Object.keys(DAY_TYPES).map(dt=>({
+    dt, label:DAY_TYPES[dt].label, color:DAY_TYPES[dt].color,
+    days: dayTypeCount[dt]||0,
+    avgSpend: dayTypeCount[dt] ? Math.round((spendSum[dt]||0)/dayTypeCount[dt]) : null,
+    avgEnergyDelta: energyCount[dt] ? Math.round(energySum[dt]/energyCount[dt]) : null,
+    energyEntries: energyCount[dt]||0,
+  }));
+}
+function renderShiftStatsSection(){
+  const stats = computeShiftTypeStats();
+  if(!stats || !stats.some(s=>s.days>0)){
+    return `<div class="sectiontitle">📊 Műszak szerinti pénzügy/energia</div>
+    <div class="card"><div class="empty"><div class="ic">📊</div><div class="t">Még nincs elég adat</div><div class="d">Rögzíts pár egyéb kiadást vagy aktivitást, hogy lássuk a mintákat műszaktípusonként.</div></div></div>`;
+  }
+  const activeStats = stats.filter(s=>s.days>0);
+  const maxSpend = Math.max(1, ...activeStats.map(s=>Math.abs(s.avgSpend||0)));
+  const maxEnergyAbs = Math.max(1, ...activeStats.map(s=>Math.abs(s.avgEnergyDelta||0)));
+  const rows = activeStats.map(s=>`
+    <div class="row" style="align-items:flex-start;">
+      <span class="dot dot-${s.color}" style="margin-top:6px;flex-shrink:0;"></span>
+      <div class="row-main">
+        <div class="row-title" style="font-size:13.5px;">${s.label}</div>
+        <div class="row-sub">${s.days} nap a megfigyelt időszakban</div>
+        <div class="flex between center" style="margin-top:6px;">
+          <span class="small muted" style="width:106px;flex-shrink:0;">Átl. napi költés</span>
+          <div style="flex:1;background:var(--surface-3);border-radius:999px;height:8px;overflow:hidden;margin:0 8px;"><div style="height:100%;border-radius:999px;background:var(--trail-yellow);width:${s.avgSpend!=null?Math.round(100*Math.abs(s.avgSpend)/maxSpend):0}%;"></div></div>
+          <span class="mono small" style="width:76px;text-align:right;flex-shrink:0;">${s.avgSpend!=null? s.avgSpend.toLocaleString('hu-HU')+' Ft':'—'}</span>
+        </div>
+        <div class="flex between center" style="margin-top:4px;">
+          <span class="small muted" style="width:106px;flex-shrink:0;">Átl. energiaváltozás</span>
+          <div style="flex:1;background:var(--surface-3);border-radius:999px;height:8px;overflow:hidden;margin:0 8px;"><div style="height:100%;border-radius:999px;background:${(s.avgEnergyDelta||0)>=0?'var(--trail-green)':'var(--trail-red)'};width:${s.avgEnergyDelta!=null?Math.round(100*Math.abs(s.avgEnergyDelta)/maxEnergyAbs):0}%;"></div></div>
+          <span class="mono small" style="width:76px;text-align:right;flex-shrink:0;color:${(s.avgEnergyDelta||0)>=0?'var(--trail-green)':'var(--trail-red)'};">${s.avgEnergyDelta!=null?(s.avgEnergyDelta>=0?'+':'')+s.avgEnergyDelta+(s.energyEntries<3?' (kevés adat)':''):'—'}</span>
+        </div>
+      </div>
+    </div>`).join('');
+  return `<div class="sectiontitle">📊 Műszak szerinti pénzügy/energia</div>
+  <div class="card" style="padding:6px 16px;">${rows}</div>`;
+}
+
+/* 2) Alvás → másnapi feladatteljesítés korreláció (ld. backlog #34).
+   Tasks-nak NINCS teljesítési időbélyege (a saveNewTask()/toggleTask() csak egy
+   done:boolean-t vezet, doneAt-ot nem — ld. toggleTask() kb. 1070. sor), ezért
+   csak azt tudjuk vizsgálni, hogy egy adott napra (t.due) eső feladat végül
+   elkészült-e, nem azt, hogy MIKOR. "Összehasonlítható nap" = van healthLog
+   alvásadat aznapra ÉS van legalább 1 feladat a rákövetkező napra (t.due alapján,
+   nem taskOccursOn — a "másnap" itt kifejezetten a határidő napja). 5 alatt
+   nem mutatunk bucketes bontást (túl kevés adatból félrevezető lenne). */
+function computeSleepTaskCorrelation(){
+  const healthLog = (App.state.healthLog||[]).filter(h=>h.date && h.sleepH!=null);
+  const tasks = App.state.tasks||[];
+  const rows = [];
+  healthLog.forEach(h=>{
+    const nextIso = isoAddDays(h.date, 1);
+    const due = tasks.filter(t=>t.due===nextIso);
+    if(!due.length) return;
+    const done = due.filter(t=>t.done).length;
+    rows.push({date:h.date, sleepH:h.sleepH, total:due.length, done});
+  });
+  return rows;
+}
+const SLEEP_BUCKETS = [
+  {label:'< 6 óra', test:h=>h<6},
+  {label:'6–7 óra', test:h=>h>=6&&h<7},
+  {label:'7–8 óra', test:h=>h>=7&&h<8},
+  {label:'8+ óra', test:h=>h>=8},
+];
+function renderSleepTaskSection(){
+  const rows = computeSleepTaskCorrelation();
+  if(rows.length < 5){
+    return `<div class="sectiontitle">😴 Alvás → másnapi feladatteljesítés</div>
+    <div class="card"><div class="empty"><div class="ic">😴</div><div class="t">Még nincs elég adat</div><div class="d">Legalább 5 olyan nap kell, amikor van rögzített alvásidő ÉS másnapra határidős feladat is van (eddig: ${rows.length}).</div></div></div>`;
+  }
+  const buckets = SLEEP_BUCKETS.map(b=>{
+    const matched = rows.filter(r=>b.test(r.sleepH));
+    const totalTasks = matched.reduce((s,r)=>s+r.total,0);
+    const doneTasks = matched.reduce((s,r)=>s+r.done,0);
+    return {label:b.label, days:matched.length, rate: totalTasks? Math.round(100*doneTasks/totalTasks) : null};
+  });
+  const rowsHtml = buckets.map(b=>`
+    <div class="flex between center" style="padding:6px 0;">
+      <span class="small" style="width:76px;flex-shrink:0;">${b.label}</span>
+      <div style="flex:1;background:var(--surface-3);border-radius:999px;height:8px;overflow:hidden;margin:0 8px;"><div style="height:100%;border-radius:999px;background:var(--trail-blue);width:${b.rate||0}%;"></div></div>
+      <span class="mono small" style="width:88px;text-align:right;flex-shrink:0;">${b.rate!=null? b.rate+'% ('+b.days+' nap)':'nincs adat'}</span>
+    </div>`).join('');
+  return `<div class="sectiontitle">😴 Alvás → másnapi feladatteljesítés</div>
+  <div class="card" style="padding:6px 16px;">
+    <div class="small muted" style="margin-bottom:8px;">${rows.length} összehasonlítható nap alapján: az előző éjszakai alvásidő szerinti csoportokban mennyi a másnapra eső feladatok teljesítési aránya.</div>
+    ${rowsHtml}
+  </div>`;
+}
+
+/* 3) Banki/Foodora-eredetű költés → energia (ld. backlog #38).
+   A leggyérebb adatú nézet a négy közül: spendLedger 'bank'/'foodora' forrású
+   tételei valószínűleg ritkák (csak akkor keletkeznek, ha a natív értesítés-
+   figyelő ténylegesen elkapott egy banki/Foodora push-t, ld. dev guideline a
+   'financeContextExclude' mintáról). EZÉRT itt NEM formális korrelációs
+   együtthatót számolunk, hanem (a taskleírásban is javasolt egyszerűsítés)
+   mindig megmutatjuk az időbeli áttekintést (mely napon mennyi ilyen költés
+   volt, aznapi átlagos energiaváltozással együtt), és CSAK akkor egészítjük ki
+   egy "költéses nap vs. többi nap" átlag-összevetéssel, ha legalább 5 nap van,
+   ahol VAN is ilyen költés ÉS van aznapi energiaadat is. */
+function computeSpendEnergyTimeline(){
+  const spend = (App.state.finance.spendLedger||[]).filter(s=>s.date && (s.source==='foodora'||s.source==='bank'));
+  const acts = App.state.activities||[];
+  const energyByDate = {};
+  acts.forEach(a=>{
+    if(!a.date || a.energyBefore==null || a.energyAfter==null) return;
+    if(!energyByDate[a.date]) energyByDate[a.date] = [];
+    energyByDate[a.date].push(a.energyAfter-a.energyBefore);
+  });
+  const byDate = {};
+  spend.forEach(s=>{
+    if(!byDate[s.date]) byDate[s.date] = {amount:0,count:0,sources:new Set()};
+    byDate[s.date].amount += s.amount||0;
+    byDate[s.date].count++;
+    byDate[s.date].sources.add(s.source);
+  });
+  const rows = Object.keys(byDate).sort().map(d=>{
+    const e = energyByDate[d];
+    return {
+      date:d, amount:byDate[d].amount, count:byDate[d].count, sources:[...byDate[d].sources],
+      energyDelta: e? Math.round(e.reduce((a,b)=>a+b,0)/e.length) : null
+    };
+  });
+  const overlap = rows.filter(r=>r.energyDelta!=null);
+  let comparison = null;
+  if(overlap.length>=5){
+    const otherDeltas = [];
+    Object.keys(energyByDate).forEach(d=>{
+      if(byDate[d]) return; // ez a nap már a "költéses" csoportban van
+      const list = energyByDate[d];
+      otherDeltas.push(list.reduce((a,b)=>a+b,0)/list.length);
+    });
+    if(otherDeltas.length>=3){
+      comparison = {
+        spendAvg: Math.round(overlap.reduce((s,r)=>s+r.energyDelta,0)/overlap.length),
+        otherAvg: Math.round(otherDeltas.reduce((a,b)=>a+b,0)/otherDeltas.length),
+        spendDays: overlap.length, otherDays: otherDeltas.length
+      };
+    }
+  }
+  return {rows, comparison};
+}
+function renderSpendEnergySection(){
+  const {rows, comparison} = computeSpendEnergyTimeline();
+  if(!rows.length){
+    return `<div class="sectiontitle">🛵 Banki/Foodora költés és energia</div>
+    <div class="card"><div class="empty"><div class="ic">🛵</div><div class="t">Még nincs ilyen forrású költés</div><div class="d">A banki értesítésből vagy Foodorából automatikusan felismert tételek itt jelennek majd meg, az aznapi energiaszinttel együtt.</div></div></div>`;
+  }
+  const maxAmount = Math.max(1, ...rows.map(r=>r.amount));
+  const timelineHtml = rows.slice(-10).reverse().map(r=>`
+    <div class="row">
+      <span style="font-size:17px;">${r.sources.includes('foodora')?'🛵':'🏦'}</span>
+      <div class="row-main">
+        <div class="row-title" style="font-size:13.5px;">${fmtDateHu(r.date)}${r.count>1?' · '+r.count+' tétel':''}</div>
+        <div class="progwrap" style="margin:4px 0 2px;height:5px;"><div class="progbar" style="width:${Math.round(100*r.amount/maxAmount)}%;background:var(--trail-yellow);"></div></div>
+      </div>
+      <div style="text-align:right;flex-shrink:0;">
+        <div class="mono small">${r.amount.toLocaleString('hu-HU')} Ft</div>
+        <div class="mono small" style="color:${r.energyDelta==null?'var(--muted)':r.energyDelta>=0?'var(--trail-green)':'var(--trail-red)'};">${r.energyDelta==null?'nincs energiaadat':(r.energyDelta>=0?'+':'')+r.energyDelta+' energia'}</div>
+      </div>
+    </div>`).join('');
+  const comparisonHtml = comparison ? `
+    <div class="hr"></div>
+    <div class="flex between" style="padding:5px 0;"><span class="small">Napokon, amikor volt ilyen költés</span><span class="mono small" style="color:${comparison.spendAvg>=0?'var(--trail-green)':'var(--trail-red)'};">${comparison.spendAvg>=0?'+':''}${comparison.spendAvg} energia (${comparison.spendDays} nap)</span></div>
+    <div class="flex between" style="padding:5px 0;"><span class="small">Más, energiaadattal rendelkező napokon</span><span class="mono small" style="color:${comparison.otherAvg>=0?'var(--trail-green)':'var(--trail-red)'};">${comparison.otherAvg>=0?'+':''}${comparison.otherAvg} energia (${comparison.otherDays} nap)</span></div>
+  ` : `<div class="small muted" style="margin-top:2px;">Még kevés az átfedő adat (aznapi költés + aznapi energia) egy megbízható összevetéshez — egyelőre a fenti időbeli áttekintés áll rendelkezésre.</div>`;
+  return `<div class="sectiontitle">🛵 Banki/Foodora költés és energia</div>
+  <div class="card" style="padding:4px 16px;">${timelineHtml}</div>
+  <div class="card">${comparisonHtml}</div>`;
+}
+
+/* 4) Napló hangulat + műszaktípus trend (ld. backlog #40). */
+function computeJournalMoodStats(){
+  const journal = (App.state.journal||[]).filter(e=>e.mood!=null && e.date);
+  const byType = {};
+  journal.forEach(e=>{
+    const dt = dayTypeFor(e.date);
+    if(!byType[dt]) byType[dt] = {sum:0,count:0};
+    byType[dt].sum += e.mood; byType[dt].count++;
+  });
+  const stats = Object.keys(DAY_TYPES).map(dt=>({
+    dt, label:DAY_TYPES[dt].label, color:DAY_TYPES[dt].color,
+    count: (byType[dt]||{}).count||0,
+    avg: (byType[dt]&&byType[dt].count) ? byType[dt].sum/byType[dt].count : null
+  }));
+  const cutoff = isoAddDays(todayISO(), -30);
+  const trend = journal.filter(e=>e.date>=cutoff).slice().sort((a,b)=>a.date.localeCompare(b.date));
+  return {stats, trend, totalEntries:journal.length};
+}
+function renderJournalMoodSection(){
+  const {stats, trend, totalEntries} = computeJournalMoodStats();
+  if(totalEntries < 3){
+    return `<div class="sectiontitle">📓 Hangulat és műszaktípus</div>
+    <div class="card"><div class="empty"><div class="ic">📓</div><div class="t">Még nincs elég naplóbejegyzés</div><div class="d">Írj néhány hangulatértékes naplóbejegyzést (Beosztás → Napló), hogy lássuk a mintákat.</div></div></div>`;
+  }
+  const activeTypes = stats.filter(s=>s.count>0);
+  const byTypeHtml = activeTypes.map(s=>`
+    <div class="flex between center" style="padding:6px 0;">
+      <span class="flex gap8 center small"><span class="dot dot-${s.color}"></span>${s.label}</span>
+      <span class="mono small">${s.avg.toFixed(1)} / 5${s.count<3?' <span class="small muted">(kevés adat)</span>':''} <span class="small muted">· ${s.count} bejegyzés</span></span>
+    </div>`).join('');
+  const moodColor = m => m>=4?'var(--trail-green)':m===3?'var(--trail-yellow)':'var(--trail-red)';
+  const trendHtml = trend.length>=2 ? `
+    <div style="display:flex;align-items:flex-end;gap:3px;height:64px;margin-top:10px;overflow-x:auto;padding-bottom:2px;">
+      ${trend.map(e=>`<div title="${fmtDateHu(e.date)}: ${e.mood}/5" style="flex-shrink:0;width:9px;height:${e.mood*11+6}px;background:${moodColor(e.mood)};border-radius:3px;"></div>`).join('')}
+    </div>
+    <div class="small muted" style="margin-top:6px;">Utolsó 30 nap, ${trend.length} bejegyzés — minden oszlop egy naplóbejegyzés hangulata (1-5)</div>
+  ` : `<div class="small muted" style="margin-top:8px;">Legalább 2 bejegyzés kell az elmúlt 30 napból a trendhez.</div>`;
+  return `<div class="sectiontitle">📓 Hangulat és műszaktípus</div>
+  <div class="card" style="padding:6px 16px;">${byTypeHtml}</div>
+  <div class="card">
+    <div class="card-title">Hangulat trend (30 nap)</div>
+    ${trendHtml}
+  </div>`;
+}
+
+function renderElemzesView(c){
+  c.innerHTML = renderShiftStatsSection() + renderSleepTaskSection() + renderSpendEnergySection() + renderJournalMoodSection();
 }
 
 function renderBodyView(c){
