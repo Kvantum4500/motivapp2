@@ -405,6 +405,51 @@ const MUSCLE_GROUPS = [
  *      módosítja; a mentés-státusz jelző pedig `saveState()`-ben (kb.
  *      474-475. sor) `badge.outerHTML = saveStatusBadgeHtml()`-lel
  *      frissül anélkül, hogy a teljes Settings nézetet újrarenderelné.
+ *
+ * 4) Natív hidak (window.AndroidX / window.NativeBridge) leltára:
+ *    A natív Android WebView-app (MainWebViewActivity.kt, kb. onCreate()) 7
+ *    darab @JavascriptInterface hidat regisztrál. Böngészőben/telepített
+ *    webes (TWA) verzióban egyik sem létezik - minden hívó oldal ellenőrzi
+ *    `typeof window.AndroidX!=='undefined'`-del vagy hasonlóval, mielőtt
+ *    hívná (soha nem feltételezett előfeltétel). Sorvonatkozások "kb." -
+ *    közelítőek, kódváltozással eltolódhatnak, ellenőrizd grep-pel:
+ *      `grep -n "window\.AndroidX\." index.html` / `grep -n "@JavascriptInterface" -A1 XBridge.kt`
+ *
+ *    - window.NativeBridge (NativeBridge.kt): a fő irány NATÍV -> JS (NEM
+ *      @JavascriptInterface, evaluateJavascript-tal hívja a natív oldal,
+ *      biztonsági okból - ld. a fájl saját doksiját): `onBankNotifications`/
+ *      `onFoodoraNotifications` (kb. 4197/4201. sor). Az egyetlen JS -> natív
+ *      irányú (@JavascriptInterface) pár: `acknowledgeBankNotification`/
+ *      `acknowledgeFoodoraNotification(postTime)` - hívva `closeSheet()`/
+ *      `_finishActiveNotifQueueItem()`-ből (kb. 4236-4239. sor).
+ *    - window.AndroidHealth (HealthConnectBridge.kt): `isAvailable()`,
+ *      `requestPermissions()`, `syncToday()`, `getPendingBackgroundResult()`
+ *      - hívva kb. 5023-5172. sor (Health Connect szinkron gomb). Natív ->
+ *      JS válasz: `window.onAndroidHealthResult(payload)` (kb. 5075. sor).
+ *    - window.AndroidBackup (BackupBridge.kt): `exportJson(json, filename)`
+ *      - hívva `exportData()`-ból (kb. 4772. sor).
+ *    - window.AndroidTracking (TrackingBridge.kt): `start()`, `stop()`,
+ *      `takePendingPointsJson()` - hívva kb. 2322-2384. sor (Térkép
+ *      túrakövetés).
+ *    - window.AndroidNotify (NotifyBridge.kt): `notify(id,title,body)`,
+ *      `reportActivity(streakWeeks,lastActiveDateIso)` - hívva kb.
+ *      5755-5789. sor (Életkampány szintlépés/boss-legyőzés).
+ *    - window.AndroidMaps (MapsBridge.kt): `openJourneysMap(json)`,
+ *      `showEmbeddedMap(json)`, `updateEmbeddedMapRect(x,y,w,h)`,
+ *      `hideEmbeddedMap()`, `isMapEmbedLocked()`, `requestEmbeddedMapUnlock()`
+ *      - hívva kb. 2543-5565. sor (ÚTVONALAK beágyazott térkép). Natív -> JS
+ *      válasz: `window.onEmbeddedMapUnlocked()` (kb. 5560. sor).
+ *    - window.AndroidNotifAccess (NotificationAccessBridge.kt):
+ *      `isAccessGranted()`, `openAccessSettings()`, `testScanNow()` - hívva
+ *      kb. 5046-5058. sor (Integrációk "Teszt: aktív értesítések
+ *      újraellenőrzése" gomb).
+ *    -> Code review checklist: minden ÚJ @JavascriptInterface metódus
+ *       hozzáadásakor (a) egészítsd ki ezt a leltárt, (b) ellenőrizd, hogy
+ *       a `android/app/proguard-rules.pro` `-keepclassmembers` szabálya
+ *       (minden `@android.webkit.JavascriptInterface` metódusra vonatkozik,
+ *       osztálynévtől függetlenül) érvényes rá - külön teendő NINCS, de ha
+ *       ez a szabály valaha megszűnne/szűkülne, minden itt felsorolt hídnak
+ *       újra kellene keep-elődnie release buildben.
  * ============================================================ */
 
 function defaultState(){
