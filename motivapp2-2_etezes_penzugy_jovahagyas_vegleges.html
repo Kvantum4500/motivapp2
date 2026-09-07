@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.9';
+const APP_VERSION = '2.2.10';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.9';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.10';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -3910,12 +3910,18 @@ function saveSpend(id){
    kifejezett "Mentés" kattintása nélkül. Érvénytelen/hiányzó összeg esetén
    is megnyílik a lap, csak üresen/0-val előtöltve, hogy a felhasználó
    kézzel be tudja írni. */
+// A natív oldal egy terhelést (költést) jelző banki értesítésből a MÍNUSZ előjelet is
+// helyesen kiolvassa (pl. "-12 345 Ft" -> -12345) - ez itt a VÁRT, gyakori eset egy
+// kiadást jelző értesítésnél, nem hibás bemenet. A költés-mezőnek viszont a pozitív
+// összeg kell (mennyit adott ki a felhasználó), ezért Math.abs-szal vesszük az
+// előjel nélküli nagyságot - egy nullás/érvénytelen összegnél pedig marad az üres
+// előtöltés, hogy a felhasználó kézzel be tudja írni.
 window.onBankNotification = function(amount, rawText, sourcePackage){
-  const amt = (typeof amount==='number' && isFinite(amount) && amount>0) ? amount : '';
+  const amt = (typeof amount==='number' && isFinite(amount) && amount!==0) ? Math.abs(amount) : '';
   openBankNotificationSheet(amt, rawText||'');
 };
 window.onFoodoraNotification = function(amount, rawText){
-  const amt = (typeof amount==='number' && isFinite(amount) && amount>0) ? amount : '';
+  const amt = (typeof amount==='number' && isFinite(amount) && amount!==0) ? Math.abs(amount) : '';
   openFoodoraOrderSheet(amt, rawText||'');
 };
 function openBankNotificationSheet(amount, rawText){
