@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.7';
+const APP_VERSION = '2.2.8';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.7';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.8';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -2859,6 +2859,46 @@ function parseLocalMealCommand(text){
   return {type:'meal',name,mealType,kcal,protein,carbs,fat};
 }
 
+/* parsePastRelativeDateHU: parseRelativeDateHU (lentebb) csak JÖVŐBELI relatív
+   dátumokat ismer fel (ma/holnap/holnapután/hétnapnevek) - az feladatok/
+   események határidejéhez van hangolva, ahol egy MÚLTBELI dátum nem
+   értelmezhető. Az edzésnaplózás viszont tipikusan MÚLT idejű ("Tegnap
+   voltam edzeni..."), ezért ehhez külön, szűkebb hatókörű helper kell -
+   szándékosan nem bővítjük ki a megosztott parseRelativeDateHU-t erre, hogy
+   a task/event felismerést ne érintse. */
+function parsePastRelativeDateHU(normSeg){
+  if(normSeg.includes('tegnapelott')){ const d=new Date(); d.setDate(d.getDate()-2); return toLocalISO(d); }
+  if(normSeg.includes('tegnap')){ const d=new Date(); d.setDate(d.getDate()-1); return toLocalISO(d); }
+  if(/\bma\b/.test(normSeg)) return todayISO();
+  return '';
+}
+/* parseLocalWorkoutCommand: a parseLocalMealCommand pontos mintáját követi
+   (hint-szavak MÚLT időben + felszólító alak külön ágon), hogy az edzés
+   naplózása API kulcs nélkül, helyben is működjön - ugyanúgy, ahogy az
+   étkezés/feladat/esemény felismerés is API nélkül működik (ld. a fájl eleji
+   HELYI AI PARANCSOK megjegyzést). A kategória-szöveget (pl. "Street
+   workoutot") NEM próbáljuk lemmatizálni/toldalék nélkülire vágni - a
+   jóváhagyó kártyán úgyis szabadon szerkeszthető (ugyanaz a minta, mint a
+   meal-parser étel-nevénél). */
+function parseLocalWorkoutCommand(text){
+  const raw=(text||'').trim(), n=normalizeHU(raw);
+  const imperativeHint = /rogzit\w*\s+(?:egy\s+)?edz\w*/.test(n) || /edz\w*\s+rogzit\w*/.test(n);
+  const hintRe = /\bedzettem\b|\bvoltam\s+edzeni\b|\bedzeni\s+voltam\b/;
+  if(!hintRe.test(n) && !imperativeHint) return null;
+  const mm = raw.match(/(?:edzettem|voltam\s+edzeni|edzeni\s+voltam)\s+(.+?)(?:[.!?]|$)/i);
+  let category=null;
+  if(mm){
+    category=mm[1].trim();
+  }else if(imperativeHint){
+    category=raw.replace(/^.*?edz[a-zA-ZáéíóöőúüűÁÉÍÓÖŐÚÜŰ]*\s*[:.,!?-]*\s*/i,'').trim();
+  }
+  if(!category) category='Edzés';
+  const durMatch = n.match(/(\d{1,3})\s*perc/);
+  const durationMin = durMatch ? parseInt(durMatch[1],10) : null;
+  const date = parsePastRelativeDateHU(n) || todayISO();
+  return {type:'workout', category, durationMin, date, muscleGroups:[], notes:''};
+}
+
 /* parseRelativeDateHU / parseTimeHU: csak EGYÉRTELMŰ relatív dátum- és időpont-
    kifejezéseket ismernek fel (ma/holnap/holnapután, ill. "16 óra"/"16:30"/
    "délután 4"). Minden más esetben üres stringet adnak vissza — NEM találgatunk,
@@ -3060,6 +3100,9 @@ function addLocalAiSuggestions(actions){
 function handleLocalAiCommand(text){
   const meal=parseLocalMealCommand(text);
   if(meal){ addLocalAiSuggestions([meal]); return true; }
+
+  const workout=parseLocalWorkoutCommand(text);
+  if(workout){ addLocalAiSuggestions([workout]); return true; }
 
   const raw=(text||'').trim(), n=normalizeHU(raw);
 
