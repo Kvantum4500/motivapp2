@@ -505,6 +505,7 @@ function defaultState(){
       quarterReflections:['','','',''],
       favorites:[],
       bossNotified:[], // quarter indexek (0-3), amikhez már ment natív "boss legyőzve" értesítés
+      cycleSummaryNotified:[], // ciklusindexek, amikhez már ment ciklus-vége AI-összefoglaló (natív push + aiChat), ld. rpgCheckCycleSummary()
       workoutStreakQuestSuggestedDates:[], // ISO dátumok (a sorozat záró napja), amikhez már ment "edzés-sorozat" küldetés-javaslat (ld. checkWorkoutStreakQuest) — ugyanaz a "csak egyszer" minta, mint bossNotified-nél
       onboarded:false
     },
@@ -564,6 +565,7 @@ async function loadState(){
       if(!Array.isArray(App.state.rpg.quarterReflections) || App.state.rpg.quarterReflections.length !== 4) App.state.rpg.quarterReflections = ['','','',''];
       if(!Array.isArray(App.state.rpg.favorites)) App.state.rpg.favorites = [];
       if(!Array.isArray(App.state.rpg.bossNotified)) App.state.rpg.bossNotified = [];
+      if(!Array.isArray(App.state.rpg.cycleSummaryNotified)) App.state.rpg.cycleSummaryNotified = [];
       if(!Array.isArray(App.state.rpg.workoutStreakQuestSuggestedDates)) App.state.rpg.workoutStreakQuestSuggestedDates = [];
       if(typeof App.state.rpg.onboarded !== 'boolean') App.state.rpg.onboarded = false;
       if(!App.state.cycleCoach || typeof App.state.cycleCoach !== 'object') App.state.cycleCoach = d.cycleCoach;
@@ -679,13 +681,25 @@ function fmtDateHu(iso){
   return days[d.getDay()]+' · '+months[d.getMonth()]+' '+d.getDate()+'.';
 }
 function daysBetween(a,b){ return Math.round((new Date(b)-new Date(a))/86400000); }
+/* scheduleDayIndex: az adott nap (iso) hányadik napja (0-indexelt) a felhasználó
+   műszakrend-mintájának (App.state.schedule.pattern) éppen futó ismétlésében —
+   ugyanaz a modulo-számítás, amit korábban dayTypeFor közvetlenül elvégzett
+   (ld. lentebb); külön függvénybe emelve, hogy a parseLocalCycleQuestionCommand
+   (helyi AI-parancs, ld. HELYI AI PARANCSOK szekció) is újrahasználhassa, ahelyett
+   hogy újraimplementálná a műszakrend-modulo aritmetikát. Override-okat (dayTypeFor
+   szándékosan) NEM vesz figyelembe — a mintában elfoglalt pozíciót adja vissza,
+   nem a ténylegesen aznapra beállított naptípust. */
+function scheduleDayIndex(iso){
+  const pat = App.state.schedule.pattern;
+  if(!pat || !pat.length) return 0;
+  return ((daysBetween(App.state.schedule.startDate, iso) % pat.length)+pat.length)%pat.length;
+}
 function dayTypeFor(iso){
   const ov = App.state.schedule.overrides[iso];
   if(ov) return ov;
   const pat = App.state.schedule.pattern;
   if(!pat || !pat.length) return 'pihen';
-  const idx = ((daysBetween(App.state.schedule.startDate, iso) % pat.length)+pat.length)%pat.length;
-  return pat[idx];
+  return pat[scheduleDayIndex(iso)];
 }
 function escapeHtml(s){ return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 /* sanitizeImportedId/sanitizeIcon: closes an XSS hole found in a security review.
@@ -3361,6 +3375,76 @@ function parseLocalSavingsAddCommand(text){
   return {type:'savings_add', name:hit.name, amount};
 }
 
+/* parseLocalCycleQuestionCommand: egyszerű, közvetlen KÉRDÉSEKre válaszol a
+   felhasználó aktuális munkarend-ciklusáról (App.state.schedule.pattern/
+   startDate), API-hívás NÉLKÜL — a dayTypeFor/scheduleDayIndex meglévő
+   modulo-aritmetikáját újrahasználva (ld. scheduleDayIndex doksija fentebb).
+   A többi helyi paranccsal ELLENTÉTBEN ez NEM ad vissza jóváhagyandó javaslatot
+   (nincs addLocalAiSuggestions-hívás) — egy csak-olvasás jellegű kérdésnél
+   nincs mit jóváhagyni, ezért handleLocalAiCommand ezt közvetlenül aiChat-be
+   írja, sima assistant-üzenetként.
+   Kontextus-kizárás (FEJLESZTŐI IRÁNYELVEK #2, ld. financeContextExclude
+   mintája): feladat/emlékeztető-jellegű mondatok (pl. "Emlékeztess a következő
+   pihenőnapomon...") NEM helyi kérdésként értelmezendők, még ha tartalmazzák is
+   a "következő pihenőnap" kifejezést — ezeket parseLocalTaskEventCommand-nak
+   kell felismernie (jövőbeli feladatként/eseményként), ezért itt explicit
+   kizárjuk őket, mielőtt bármelyik mintát megpróbálnánk illeszteni. */
+const CYCLE_QUESTION_CONTEXT_EXCLUDE = ['feladat','emlekezt','naplozz','koltottem','felretettem','bevetel','fizettem'];
+function parseLocalCycleQuestionCommand(text){
+  const n = normalizeHU(text);
+  if(!n) return null;
+  if(CYCLE_QUESTION_CONTEXT_EXCLUDE.some(x=>n.includes(x))) return null;
+
+  const hasCiklus = /\bciklus\w*\b/.test(n);
+  const today = todayISO();
+  const pat = App.state.schedule.pattern;
+  const len = (pat && pat.length) || 0;
+
+  // 1) "Hányadik napja vagyok a ciklusnak?" / "Melyik napon vagyok a ciklusban?"
+  if(hasCiklus && (/\bhanyadik\b/.test(n) || (/\bmelyik\b/.test(n) && /\bnap\w*\b/.test(n)))){
+    if(!len) return null;
+    const dayNum = scheduleDayIndex(today) + 1;
+    return dayNum+'. napja vagy a mostani '+len+' napos ciklusnak.';
+  }
+
+  // 2) "Meddig tart a mostani ciklusom?" / "Mikor ér véget a ciklusom?"
+  if(hasCiklus && ((/\bmeddig\b/.test(n) && /\btart\w*\b/.test(n)) || (/\bmikor\b/.test(n) && (/\ber\s+veget\b/.test(n) || /\bvegzodik\w*\b/.test(n))))){
+    if(!len) return null;
+    const idx = scheduleDayIndex(today);
+    const d = new Date(today+'T00:00:00');
+    d.setDate(d.getDate() + (len-1-idx));
+    const endIso = toLocalISO(d);
+    return 'A mostani ciklusod '+fmtDateHu(endIso)+' napon ér véget.';
+  }
+
+  // 3) "Mikor van a következő éjszakás (műszakom)?" / "Mikor van a következő pihenőnapom?"
+  if(/\bkovetkezo\b/.test(n) && /\bmikor\b/.test(n)){
+    const DAYTYPE_HINTS = [
+      {type:'ejszaka', re:/\bejszak\w*\b/},
+      {type:'nappal', re:/\bnappal\w*\b/},
+      {type:'pihen', re:/\bpihen\w*\b/},
+      {type:'szabi', re:/\b(szabi\w*|szabadsag\w*)\b/},
+      {type:'egyeb', re:/\begyeb\w*\b/}
+    ];
+    const hit = DAYTYPE_HINTS.find(h=>h.re.test(n));
+    if(hit && len){
+      const label = ((DAY_TYPES[hit.type] && DAY_TYPES[hit.type].label) || hit.type).toLowerCase();
+      let d = new Date(today+'T00:00:00');
+      d.setDate(d.getDate()+1);
+      let found = null;
+      for(let i=0;i<370;i++){
+        const iso = toLocalISO(d);
+        if(dayTypeFor(iso)===hit.type){ found = iso; break; }
+        d.setDate(d.getDate()+1);
+      }
+      if(found) return 'A következő '+label+': '+fmtDateHu(found);
+      return 'A jelenlegi beosztásodban nem találtam '+label+' napot a következő évben.';
+    }
+  }
+
+  return null;
+}
+
 /* parseRelativeDateHU / parseTimeHU: csak EGYÉRTELMŰ relatív dátum- és időpont-
    kifejezéseket ismernek fel (ma/holnap/holnapután, ill. "16 óra"/"16:30"/
    "délután 4"). Minden más esetben üres stringet adnak vissza — NEM találgatunk,
@@ -3675,6 +3759,16 @@ function handleLocalAiCommand(text){
 
   const savingsAdd=parseLocalSavingsAddCommand(text);
   if(savingsAdd){ addLocalAiSuggestions([savingsAdd]); return true; }
+
+  // Ciklus-kérdés: olvasás-jellegű Q&A, NINCS jóváhagyandó javaslat (ld.
+  // parseLocalCycleQuestionCommand doksija) — ezért ez közvetlenül aiChat-be
+  // ír, nem addLocalAiSuggestions-on keresztül megy.
+  const cycleAnswer=parseLocalCycleQuestionCommand(text);
+  if(cycleAnswer){
+    App.state.aiChat.push({role:'assistant', content:cycleAnswer, suggestions:[]});
+    saveState();
+    return true;
+  }
 
   const raw=(text||'').trim(), n=normalizeHU(raw);
 
@@ -5288,6 +5382,7 @@ function applyImportedJson(text){
   if(!Array.isArray(next.rpg.quarterReflections) || next.rpg.quarterReflections.length !== 4) next.rpg.quarterReflections = ['','','',''];
   if(!Array.isArray(next.rpg.favorites)) next.rpg.favorites = [];
   if(!Array.isArray(next.rpg.bossNotified)) next.rpg.bossNotified = [];
+  if(!Array.isArray(next.rpg.cycleSummaryNotified)) next.rpg.cycleSummaryNotified = [];
   if(typeof next.rpg.onboarded !== 'boolean') next.rpg.onboarded = false;
   if(!next.nutrition || typeof next.nutrition !== 'object'){
     next.nutrition = d.nutrition;
@@ -5913,6 +6008,7 @@ function rpgMigrateToCycleWeeks(rpg, schedulePattern){
   rpg.meta.cycleDays = cycleDays;
   rpg.meta.weeksTotal = weeksTotal;
   rpg.bossNotified = [];
+  rpg.cycleSummaryNotified = []; // a ciklusindexek is újrasorszámozódnak, a régi jelölések értelmüket vesztik (ld. bossNotified fent)
 }
 const RPG_QUARTER_TARGET_XP = 300; // cél / negyedév / skill fa a boss fighthoz
 const RPG_BOSS_DEFEAT_THRESHOLD = 5; // hány skill fának kell elérnie a negyedéves célt a boss legyőzéséhez
@@ -6264,6 +6360,87 @@ function rpgCheckBossDefeats(){
       }
     }
   }
+}
+
+/* ---- Ciklus-vége AI-összefoglaló (natív push + MotivAI chat) ----
+   Amikor egy munkarend-ciklus (egy teljes App.state.schedule.pattern-ismétlés,
+   ld. rpgGetCurrentWeekIndex) lezárul, sablon-alapú (NEM élő API-hívás — ugyanaz
+   az elv, mint rpgGenerateAgentReport/rpgGeneratePMMessage-nél) rövid összegzést
+   készítünk róla, és MIND natív push-értesítésként (window.AndroidNotify, ld.
+   androidNotifyAvailable()), MIND MotivAI chat-üzenetként (App.state.aiChat)
+   megjelenítjük. Ugyanazt a dedup-mintát követi, mint rpgCheckBossDefeats
+   (App.state.rpg.cycleSummaryNotified — már összefoglalózott ciklusindexek
+   tömbje, ld. defaultState()). Szándékosan CSAK a legutóbb lezárt ciklust nézi
+   (nem megy végig visszamenőleg minden korábbi, még nem összegzett cikluson,
+   ahogy rpgCheckBossDefeats teszi a negyedévekkel) — egy hosszú kihagyás utáni
+   újranyitás így nem zúdít egyszerre sok elavult push-értesítést a felhasználóra.
+   Hívja: init() minden app-indításkor/-visszatéréskor (ld. fájl vége). */
+function rpgCheckCycleSummary(){
+  if(!App.state.rpg || !App.state.rpg.onboarded) return;
+  const cur = rpgGetCurrentWeekIndex();
+  const justEnded = cur - 1;
+  if(justEnded < 1) return; // még az első ciklusban vagyunk, nincs mit összegezni
+  if(!Array.isArray(App.state.rpg.cycleSummaryNotified)) App.state.rpg.cycleSummaryNotified = [];
+  if(App.state.rpg.cycleSummaryNotified.includes(justEnded)) return;
+
+  const summary = rpgGenerateCycleSummary(justEnded);
+  App.state.rpg.cycleSummaryNotified.push(justEnded);
+  App.state.aiChat.push({role:'assistant', content:summary.chatText, suggestions:[]});
+  saveState();
+
+  if(androidNotifyAvailable()){
+    try{ window.AndroidNotify.notify(4312, summary.title, summary.pushBody); }catch(e){}
+  }
+}
+/* rpgCycleDateBoundsISO: a weekNum-edik ciklus [kezdő, záró] naptári napja ISO-
+   stringként — ugyanaz a számítás, mint rpgWeekDateRange()-ben, csak nyers
+   toLocalISO() dátumokkal (nem hu-HU formázott felirattal), hogy más adatlisták
+   (tasks/spendLedger/healthLog/journal) dátummezőivel közvetlenül összevethető
+   legyen. */
+function rpgCycleDateBoundsISO(weekNum){
+  const start = new Date(App.state.rpg.meta.startDate + 'T00:00:00');
+  const from = new Date(start.getTime() + (weekNum-1)*rpgCycleDays()*86400000);
+  const to = new Date(from.getTime() + (rpgCycleDays()-1)*86400000);
+  return {fromISO: toLocalISO(from), toISO: toLocalISO(to)};
+}
+/* rpgGenerateCycleSummary: a weekNum-edik (már lezárult) ciklushoz olcsón elérhető
+   valós számokból (összes XP a 9 RPG_TRACKS-en, határidős feladatok teljesítve/
+   összesen, elköltött összeg, átlagos alvás/lépésszám, átlagos naplóhangulat)
+   épít fel egy-két mondatos, sablon-generált magyar szöveget — NINCS élő API-
+   hívás, ld. a fájl eleji sablon-elvet (rpgGenerateAgentReport/PMMessage). */
+function rpgGenerateCycleSummary(weekNum){
+  const {fromISO, toISO} = rpgCycleDateBoundsISO(weekNum);
+  const xp = rpgWeekScore(weekNum);
+
+  const cycleTasks = App.state.tasks.filter(t=>t.due && t.due>=fromISO && t.due<=toISO);
+  const doneTasks = cycleTasks.filter(t=>t.done).length;
+
+  const spend = (App.state.finance.spendLedger||[])
+    .filter(e=>e.date>=fromISO && e.date<=toISO)
+    .reduce((s,e)=> s + (Number(e.amount)||0), 0);
+
+  const healthEntries = (App.state.healthLog||[]).filter(h=>h.date>=fromISO && h.date<=toISO);
+  const sleepVals = healthEntries.map(h=>h.sleepH).filter(v=>typeof v==='number' && !isNaN(v));
+  const avgSleep = sleepVals.length ? sleepVals.reduce((s,v)=>s+v,0)/sleepVals.length : null;
+  const stepsVals = healthEntries.map(h=>h.steps).filter(v=>typeof v==='number' && !isNaN(v));
+  const avgSteps = stepsVals.length ? Math.round(stepsVals.reduce((s,v)=>s+v,0)/stepsVals.length) : null;
+
+  const moodEntries = (App.state.journal||[]).filter(j=>j.date>=fromISO && j.date<=toISO && typeof j.mood==='number');
+  const avgMood = moodEntries.length ? (moodEntries.reduce((s,j)=>s+j.mood,0)/moodEntries.length) : null;
+
+  const rangeLabel = fmtDateHu(fromISO).split(' · ')[1] + ' – ' + fmtDateHu(toISO).split(' · ')[1];
+
+  const lines = [];
+  lines.push(xp+' XP a kilenc fejlődési területen');
+  lines.push(doneTasks+'/'+cycleTasks.length+' határidős feladat teljesítve');
+  if(spend>0) lines.push(spend.toLocaleString('hu-HU')+' Ft elköltve');
+  if(avgSleep!=null) lines.push('átlag '+avgSleep.toFixed(1)+' óra alvás');
+  if(avgSteps!=null) lines.push('átlag '+avgSteps.toLocaleString('hu-HU')+' lépés/nap');
+  if(avgMood!=null) lines.push('átlag '+avgMood.toFixed(1)+'/5 naplóhangulat');
+
+  const chatText = '📊 Lezárult egy ciklus ('+rangeLabel+')! Összefoglaló: '+lines.join(', ')+'.';
+  const pushBody = lines.join(', ')+'.';
+  return {title:'Ciklus lezárva!', chatText, pushBody};
 }
 
 /* ---- Duplikált küldetés megerősítése (openSheet-alapú, a forrás app
@@ -7218,6 +7395,12 @@ window.runRegressionChecks = runRegressionChecks;
 (async function init(){
   await loadState();
   renderApp();
+  // Ciklus-vége AI-összefoglaló ellenőrzése minden app-indításkor/-visszatéréskor
+  // (ld. rpgCheckCycleSummary doksija) — ugyanúgy a loadState() UTÁNI, egyszeri
+  // induló szakaszban fut, mint a lenti natív Health Connect utóellenőrzések.
+  if(typeof rpgCheckCycleSummary==='function'){
+    try{ rpgCheckCycleSummary(); }catch(e){ console.warn('MotivApp: ciklus-összefoglaló ellenőrzése sikertelen.', e); }
+  }
   if(typeof promptResumeTrackDraft==='function') promptResumeTrackDraft();
   // App.state betöltése UTÁN hívjuk (nem a szkript tetején, mint a natív híd
   // eredetileg dokumentálja) - onAndroidHealthResult App.state-et olvas/ír, tehát
