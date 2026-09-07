@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.18';
+const APP_VERSION = '2.2.19';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.18';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.19';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -3567,6 +3567,138 @@ function eventOccursOn(e, iso){
    szegmensekre, HA azoknak nincs saját dátumuk (pl. "Rögzíts eseményt holnapra.
    Fogászat, 16 óra" -> az esemény dátuma a holnapi lesz, mert a "Fogászat, 16 óra"
    szegmensnek nincs saját dátumjelölése, csak a trigger-mondatnak). */
+function stripKnownTaskEventWords(seg){
+  return seg
+    .replace(/\brogzit\w*\b/g,' ')
+    .replace(/\bfeladat\w*\b/g,' ')
+    .replace(/\bemlekeztet\w*\b/g,' ')
+    .replace(/\besemeny\w*\b/g,' ')
+    .replace(/\btalalkoz\w*\b/g,' ')
+    .replace(/\bholnaputan\w*\b/g,' ')
+    .replace(/\bholnap\w*\b/g,' ')
+    .replace(/\bma\b/g,' ')
+    .replace(/\bket\b|\bharom\b/g,' ')
+    .replace(/\d{1,2}[:.]\d{2}\b/g,' ')
+    .replace(/\bdelutan\s+\d{1,2}\b/g,' ')
+    .replace(/\b\d{1,2}\s*orakor\b/g,' ')
+    .replace(/\b\d{1,2}\s*ora\b/g,' ')
+    .replace(/[:,\-–]/g,' ')
+    .replace(/\s+/g,' ').trim();
+}
+
+function classifyTaskEventSegments(normSegs){
+  const taskKW=['feladat','emlekeztet'];
+  const eventKW=['esemeny','talalkoz'];
+  return normSegs.map((seg,i)=>{
+    const hasTaskKW=taskKW.some(k=>seg.includes(k));
+    const hasEventKW=eventKW.some(k=>seg.includes(k));
+    const stripped=stripKnownTaskEventWords(seg);
+    const isTriggerOnly=(hasTaskKW||hasEventKW)&&stripped.length<3;
+    const triggerMode=hasEventKW?'event':(hasTaskKW?'task':null);
+    return {i,hasTaskKW,hasEventKW,isTriggerOnly,triggerMode};
+  });
+}
+
+function determineTaskEventMode(meta){
+  if(meta.some(m=>m.hasEventKW)) return 'event';
+  if(meta.some(m=>m.hasTaskKW)) return 'task';
+  return null;
+}
+
+// BUGFIX (pozíció-alapú jelölt-eligibilitás): egy kulcsszó NÉLKÜLI, nem-trigger-only
+// szegmens csak akkor legyen jelölt-eligibilis, ha egy KORÁBBI (alacsonyabb indexű)
+// szegmens ugyanabban az üzenetben trigger-only volt ÉS a globális móddal megegyező
+// módhoz tartozott. A régi kód a globális `mode`-ot alkalmazta MINDEN nem-trigger-only
+// szegmensre, a pozíció figyelembevétele nélkül — emiatt egy, a trigger-mondat ELŐTT
+// álló, kulcsszó nélküli, múlt idejű kijelentés (pl. "Befizetett számlák: áram 17k ft,
+// Víz 5k ft. Feladat rögzítése holnapra: garázs befizetni 16k ft") tévesen jelöltté
+// vált, csak azért, mert az üzenet VALAHOL (egy KÉSŐBBI szegmensben) tartalmazott
+// feladat/esemény-jelzőt. Egy szegmens, ami MAGA tartalmaz feladat/esemény-jelző szót,
+// mindig eligibilis, a pozíciótól függetlenül (ez tartja meg a láncolt felismerést,
+// lásd a funkció-fejléc kommentjét).
+function computeTaskEventSegmentEligibility(meta, mode){
+  let precededByTrigger=false;
+  return meta.map(m=>{
+    const ownEligible=m.hasTaskKW||m.hasEventKW;
+    const isEligible=ownEligible||precededByTrigger;
+    if(m.isTriggerOnly && m.triggerMode===mode) precededByTrigger=true;
+    return isEligible;
+  });
+}
+
+function computeInheritedTaskEventDate(meta, normSegs){
+  let inheritedDate='';
+  meta.forEach(m=>{ if(m.isTriggerOnly){ const d=parseRelativeDateHU(normSegs[m.i]); if(d) inheritedDate=d; } });
+  return inheritedDate;
+}
+
+// Defense-in-depth: befejezett/múlt idejű kijelentésekre utaló szavak — egy ilyet
+// tartalmazó szegmens SOSE váljon task/event-jelöltté, még akkor sem, ha egyébként a
+// pozíció vagy saját kulcsszó alapján eligibilis lenne. Ez arra az esetre is véd, ha a
+// múlt idejű mondat a trigger-mondat UTÁN áll (a fenti pozíció-alapú javítás önmagában
+// csak a trigger ELŐTTI eseteket védené ki). Stílus-referencia: financeContextExclude
+// a handleLocalAiCommand-ban.
+const TASK_EVENT_CONTEXT_EXCLUDE=['befizetett','kifizettem','fizettem','elintez','megcsinal','elkuldtem','megvettem','elvegez','elkeszult','kesz van'];
+
+function buildTaskEventSuggestionFromSegment(mode, rawSeg, normSeg, inheritedDate){
+  if(TASK_EVENT_CONTEXT_EXCLUDE.some(x=>normSeg.includes(x))) return null; // múlt idejű/befejezett kijelentés
+  const dateRange=parseDateRangeHU(normSeg);
+  const ownDate=dateRange?'':parseRelativeDateHU(normSeg);
+  const time=parseTimeHU(normSeg);
+  // Megj.: sima \w NEM illeszkedik az ékezetes magyar betűkre (pl. "rögzítése" -> \w*
+  // megállna az "é"-nél és "ése" beragadna a címbe), ezért itt - a parseLocalMealCommand
+  // imperativeHint-jéhez hasonlóan - kibővített betűkészletet használunk a toldalékokhoz.
+  const HUW='[a-zA-ZáéíóöőúüűÁÉÍÓÖŐÚÜŰ]*';
+  let title=rawSeg
+    .replace(new RegExp('\\brögzít'+HUW+'\\b','gi'),' ')
+    .replace(new RegExp('\\bfeladat'+HUW+'\\b','gi'),' ')
+    .replace(new RegExp('\\bemlékeztet'+HUW+'\\b','gi'),' ')
+    .replace(new RegExp('\\besemény'+HUW+'\\b','gi'),' ')
+    .replace(new RegExp('\\btalálkoz'+HUW+'\\b','gi'),' ')
+    .replace(new RegExp('\\bholnapután'+HUW+'\\b','gi'),' ')
+    .replace(new RegExp('\\bholnap'+HUW+'\\b','gi'),' ')
+    .replace(/\bma\b/gi,' ')
+    .replace(/\d{1,2}[:.]\d{2}\b/g,' ')
+    .replace(/\bdélután\s+\d{1,2}(\s*órakor|\s*óra)?\b/gi,' ')
+    .replace(/\b\d{1,2}\s*órakor\b/gi,' ')
+    .replace(/\b\d{1,2}\s*óra\b/gi,' ');
+  if(dateRange){
+    // Az ékezetes sorszónevet (ha az illett) ÉS az általános számjegyes mintát
+    // (ha az illett) is eltávolítjuk - a kettő közül úgyis csak az egyik van
+    // ténylegesen jelen a szövegben, a másik illesztés ártalmatlan no-op.
+    title=title
+      .replace(new RegExp('\\b'+ORDINAL_DAY_FROM_HU[dateRange.fromNum]+'\\b','gi'),' ')
+      .replace(new RegExp('\\b'+ORDINAL_DAY_TO_HU[dateRange.toNum]+'\\b','gi'),' ')
+      .replace(/\b\d{1,2}\s*-?\s*t[oóő]l\b/gi,' ')
+      .replace(/\b\d{1,2}\s*-?\s*ig\b/gi,' ');
+  }
+  title=title
+    .replace(/^[\s,:;.\-–]+|[\s,:;.\-–]+$/g,'')
+    .replace(/\s+/g,' ').trim();
+  if(!title) return null; // cím nélkül nem hozunk létre javaslatot
+  if(dateRange){
+    // Több napot átívelő megbízás/esemény: a feladat/esemény adatmodellje mostantól
+    // valódi dátumTARTOMÁNYt támogat (due/dueEnd, ill. date/endDate - lásd
+    // taskOccursOn/eventOccursOn), így egyetlen javaslat-kártya jön létre a tartomány
+    // első és utolsó napjával, nem pedig egy-egy kártya minden érintett napra.
+    const start=dateRange.dates[0], end=dateRange.dates[dateRange.dates.length-1];
+    if(mode==='event'){
+      const eventType=normSeg.includes('edzes')?'edzes':'esemeny';
+      return {type:'event',title,date:start,endDate:end,time,eventType};
+    }else{
+      return {type:'task',title,due:start,dueEnd:end};
+    }
+  }else{
+    const date=ownDate||inheritedDate||'';
+    if(mode==='event'){
+      const eventType=normSeg.includes('edzes')?'edzes':'esemeny';
+      return {type:'event',title,date,time,eventType};
+    }else{
+      return {type:'task',title,due:date};
+    }
+  }
+}
+
 function parseLocalTaskEventCommand(text){
   const raw=(text||'').trim();
   if(!raw) return [];
@@ -3578,132 +3710,21 @@ function parseLocalTaskEventCommand(text){
   // ismerünk fel semmit, mint hogy rossz szegmenshez rendeljünk címet.
   if(!rawSegs.length || rawSegs.length!==normSegs.length) return [];
 
-  const taskKW=['feladat','emlekeztet'];
-  const eventKW=['esemeny','talalkoz'];
-  function stripKnownWords(seg){
-    return seg
-      .replace(/\brogzit\w*\b/g,' ')
-      .replace(/\bfeladat\w*\b/g,' ')
-      .replace(/\bemlekeztet\w*\b/g,' ')
-      .replace(/\besemeny\w*\b/g,' ')
-      .replace(/\btalalkoz\w*\b/g,' ')
-      .replace(/\bholnaputan\w*\b/g,' ')
-      .replace(/\bholnap\w*\b/g,' ')
-      .replace(/\bma\b/g,' ')
-      .replace(/\bket\b|\bharom\b/g,' ')
-      .replace(/\d{1,2}[:.]\d{2}\b/g,' ')
-      .replace(/\bdelutan\s+\d{1,2}\b/g,' ')
-      .replace(/\b\d{1,2}\s*orakor\b/g,' ')
-      .replace(/\b\d{1,2}\s*ora\b/g,' ')
-      .replace(/[:,\-–]/g,' ')
-      .replace(/\s+/g,' ').trim();
-  }
-  const meta=normSegs.map((seg,i)=>{
-    const hasTaskKW=taskKW.some(k=>seg.includes(k));
-    const hasEventKW=eventKW.some(k=>seg.includes(k));
-    const stripped=stripKnownWords(seg);
-    const isTriggerOnly=(hasTaskKW||hasEventKW)&&stripped.length<3;
-    const triggerMode=hasEventKW?'event':(hasTaskKW?'task':null);
-    return {i,hasTaskKW,hasEventKW,isTriggerOnly,triggerMode};
-  });
-
-  let mode=null;
-  if(meta.some(m=>m.hasEventKW)) mode='event';
-  else if(meta.some(m=>m.hasTaskKW)) mode='task';
+  const meta=classifyTaskEventSegments(normSegs);
+  const mode=determineTaskEventMode(meta);
   if(!mode) return [];
 
-  // BUGFIX (pozíció-alapú jelölt-eligibilitás): egy kulcsszó NÉLKÜLI, nem-trigger-only
-  // szegmens csak akkor legyen jelölt-eligibilis, ha egy KORÁBBI (alacsonyabb indexű)
-  // szegmens ugyanabban az üzenetben trigger-only volt ÉS a globális móddal megegyező
-  // módhoz tartozott. A régi kód a globális `mode`-ot alkalmazta MINDEN nem-trigger-only
-  // szegmensre, a pozíció figyelembevétele nélkül — emiatt egy, a trigger-mondat ELŐTT
-  // álló, kulcsszó nélküli, múlt idejű kijelentés (pl. "Befizetett számlák: áram 17k ft,
-  // Víz 5k ft. Feladat rögzítése holnapra: garázs befizetni 16k ft") tévesen jelöltté
-  // vált, csak azért, mert az üzenet VALAHOL (egy KÉSŐBBI szegmensben) tartalmazott
-  // feladat/esemény-jelzőt. Egy szegmens, ami MAGA tartalmaz feladat/esemény-jelző szót,
-  // mindig eligibilis, a pozíciótól függetlenül (ez tartja meg a láncolt felismerést,
-  // lásd a funkció-fejléc kommentjét).
-  let precededByTrigger=false;
-  const eligible=meta.map(m=>{
-    const ownEligible=m.hasTaskKW||m.hasEventKW;
-    const isEligible=ownEligible||precededByTrigger;
-    if(m.isTriggerOnly && m.triggerMode===mode) precededByTrigger=true;
-    return isEligible;
-  });
-
-  // Defense-in-depth: befejezett/múlt idejű kijelentésekre utaló szavak — egy ilyet
-  // tartalmazó szegmens SOSE váljon task/event-jelöltté, még akkor sem, ha egyébként a
-  // pozíció vagy saját kulcsszó alapján eligibilis lenne. Ez arra az esetre is véd, ha a
-  // múlt idejű mondat a trigger-mondat UTÁN áll (a fenti pozíció-alapú javítás önmagában
-  // csak a trigger ELŐTTI eseteket védené ki). Stílus-referencia: financeContextExclude
-  // a handleLocalAiCommand-ban.
-  const taskEventContextExclude=['befizetett','kifizettem','fizettem','elintez','megcsinal','elkuldtem','megvettem','elvegez','elkeszult','kesz van'];
-
-  let inheritedDate='';
-  meta.forEach(m=>{ if(m.isTriggerOnly){ const d=parseRelativeDateHU(normSegs[m.i]); if(d) inheritedDate=d; } });
+  const eligible=computeTaskEventSegmentEligibility(meta, mode);
+  const inheritedDate=computeInheritedTaskEventDate(meta, normSegs);
 
   const results=[];
   meta.forEach((m,idx)=>{
     if(m.isTriggerOnly) return;
     if(!eligible[idx]) return; // sem saját kulcsszava, sem megelőző trigger-only szegmense nincs
     const normSeg=normSegs[m.i];
-    if(taskEventContextExclude.some(x=>normSeg.includes(x))) return; // múlt idejű/befejezett kijelentés
     const rawSeg=rawSegs[m.i];
-    const dateRange=parseDateRangeHU(normSeg);
-    const ownDate=dateRange?'':parseRelativeDateHU(normSeg);
-    const time=parseTimeHU(normSeg);
-    // Megj.: sima \w NEM illeszkedik az ékezetes magyar betűkre (pl. "rögzítése" -> \w*
-    // megállna az "é"-nél és "ése" beragadna a címbe), ezért itt - a parseLocalMealCommand
-    // imperativeHint-jéhez hasonlóan - kibővített betűkészletet használunk a toldalékokhoz.
-    const HUW='[a-zA-ZáéíóöőúüűÁÉÍÓÖŐÚÜŰ]*';
-    let title=rawSeg
-      .replace(new RegExp('\\brögzít'+HUW+'\\b','gi'),' ')
-      .replace(new RegExp('\\bfeladat'+HUW+'\\b','gi'),' ')
-      .replace(new RegExp('\\bemlékeztet'+HUW+'\\b','gi'),' ')
-      .replace(new RegExp('\\besemény'+HUW+'\\b','gi'),' ')
-      .replace(new RegExp('\\btalálkoz'+HUW+'\\b','gi'),' ')
-      .replace(new RegExp('\\bholnapután'+HUW+'\\b','gi'),' ')
-      .replace(new RegExp('\\bholnap'+HUW+'\\b','gi'),' ')
-      .replace(/\bma\b/gi,' ')
-      .replace(/\d{1,2}[:.]\d{2}\b/g,' ')
-      .replace(/\bdélután\s+\d{1,2}(\s*órakor|\s*óra)?\b/gi,' ')
-      .replace(/\b\d{1,2}\s*órakor\b/gi,' ')
-      .replace(/\b\d{1,2}\s*óra\b/gi,' ');
-    if(dateRange){
-      // Az ékezetes sorszónevet (ha az illett) ÉS az általános számjegyes mintát
-      // (ha az illett) is eltávolítjuk - a kettő közül úgyis csak az egyik van
-      // ténylegesen jelen a szövegben, a másik illesztés ártalmatlan no-op.
-      title=title
-        .replace(new RegExp('\\b'+ORDINAL_DAY_FROM_HU[dateRange.fromNum]+'\\b','gi'),' ')
-        .replace(new RegExp('\\b'+ORDINAL_DAY_TO_HU[dateRange.toNum]+'\\b','gi'),' ')
-        .replace(/\b\d{1,2}\s*-?\s*t[oóő]l\b/gi,' ')
-        .replace(/\b\d{1,2}\s*-?\s*ig\b/gi,' ');
-    }
-    title=title
-      .replace(/^[\s,:;.\-–]+|[\s,:;.\-–]+$/g,'')
-      .replace(/\s+/g,' ').trim();
-    if(!title) return; // cím nélkül nem hozunk létre javaslatot
-    if(dateRange){
-      // Több napot átívelő megbízás/esemény: a feladat/esemény adatmodellje mostantól
-      // valódi dátumTARTOMÁNYt támogat (due/dueEnd, ill. date/endDate - lásd
-      // taskOccursOn/eventOccursOn), így egyetlen javaslat-kártya jön létre a tartomány
-      // első és utolsó napjával, nem pedig egy-egy kártya minden érintett napra.
-      const start=dateRange.dates[0], end=dateRange.dates[dateRange.dates.length-1];
-      if(mode==='event'){
-        const eventType=normSeg.includes('edzes')?'edzes':'esemeny';
-        results.push({type:'event',title,date:start,endDate:end,time,eventType});
-      }else{
-        results.push({type:'task',title,due:start,dueEnd:end});
-      }
-    }else{
-      const date=ownDate||inheritedDate||'';
-      if(mode==='event'){
-        const eventType=normSeg.includes('edzes')?'edzes':'esemeny';
-        results.push({type:'event',title,date,time,eventType});
-      }else{
-        results.push({type:'task',title,due:date});
-      }
-    }
+    const suggestion=buildTaskEventSuggestionFromSegment(mode, rawSeg, normSeg, inheritedDate);
+    if(suggestion) results.push(suggestion);
   });
   return results;
 }
@@ -4154,201 +4175,244 @@ function maybeSuggestCycleAwareWorkout(){
    Ezt hívja mind az AI-válaszból, mind a helyi parancsból (handleLocalAiCommand
    -> addLocalAiSuggestions) származó javaslatok elfogadása — lásd az egységes
    review-flow megjegyzést handleLocalAiCommand előtt. Visszaadja a toast-üzenetet. */
+function _applyFinanceSuggestion(s){
+  App.state.finance = App.state.finance || defaultState().finance;
+  App.state.finance.mandatory = Array.isArray(App.state.finance.mandatory) ? App.state.finance.mandatory : [];
+  const target = normFin(s.name);
+  let item = App.state.finance.mandatory.find(x=>normFin(x.name)===target)
+    || App.state.finance.mandatory.find(x=>normFin(x.name).includes(target)||target.includes(normFin(x.name)));
+  if(!item){ item={id:uid(),name:s.name,icon:sanitizeIcon(s.icon)||'💳',amount:0,type:'valtozo'}; App.state.finance.mandatory.push(item); }
+  item.amount = Number(s.amount)||0;
+  return item.name+': '+item.amount.toLocaleString('hu-HU')+' Ft mentve a Pénzügyekbe ✓';
+}
+
+function _applyActivityTemplateSuggestion(s){
+  const validTypes=['nappal','ejszaka','pihen','szabi','egyeb'];
+  if(!validTypes.includes(s.dayType) || !s.activity) return 'Nem sikerült értelmezni a mintát';
+  const a=s.activity;
+  const typeId = matchActivityTypeId(a.label);
+  const tpl = {type:typeId, label:a.label||'Aktivitás', icon:sanitizeIcon(a.icon)||(ACTIVITY_TYPES.find(t=>t.id===typeId)||{}).icon||'⭐',
+    durationMin:parseInt(a.durationMin)||0, physical:parseInt(a.physical)||5, mental:parseInt(a.mental)||5,
+    experience:parseInt(a.experience)||5, energyBefore:parseInt(a.energyBefore)||60, energyAfter:parseInt(a.energyAfter)||50};
+  App.state.dayTypeTemplates[s.dayType] = tpl;
+  const applied = applyDayTypeTemplateForward(s.dayType, 60);
+  return 'Minta mentve · '+applied+' jövőbeli '+(DAY_TYPE_SHORT[s.dayType]||s.dayType)+' napra felkerült ✓';
+}
+
+function _applyIncomeSuggestion(s){
+  App.state.finance = App.state.finance || defaultState().finance;
+  App.state.finance.monthlyIncome = Number(s.amount)||0;
+  return 'Havi bevétel frissítve: '+App.state.finance.monthlyIncome.toLocaleString('hu-HU')+' Ft ✓';
+}
+
+function _applySchedulePatternSuggestion(s){
+  const validTypes=['nappal','ejszaka','pihen','szabi','egyeb'];
+  if(!Array.isArray(s.pattern) || !s.pattern.length || !s.pattern.every(p=>validTypes.includes(p)) || !s.startDate){
+    return 'Nem sikerült értelmezni a műszakrendet';
+  }
+  App.state.schedule.pattern = s.pattern;
+  App.state.schedule.startDate = s.startDate;
+  return 'Műszakrend beállítva ('+s.pattern.length+' napos ciklus) ✓';
+}
+
+function _applyMealSuggestion(s){
+  // App.state.nutrition.log a valódi étkezésnapló (lásd saveMeal / renderNutNap),
+  // 'meal' kulccsal — NEM egy külön 'meals' tömb 'name' kulccsal.
+  App.state.nutrition = App.state.nutrition || {targets:{kcal:0,protein:0,carbs:0,fat:0},log:[]};
+  App.state.nutrition.log = Array.isArray(App.state.nutrition.log) ? App.state.nutrition.log : [];
+  App.state.nutrition.log.push({id:uid(),date:todayISO(),meal:s.name,
+    kcal:Number(s.kcal)||0,protein:Number(s.protein)||0,carbs:Number(s.carbs)||0,fat:Number(s.fat)||0});
+  return '🍽️ '+(s.name||'Étkezés')+' naplózva ('+(Number(s.kcal)||0)+' kcal) ✓';
+}
+
+function _applyTaskSuggestion(s){
+  // Ugyanaz a mezőkészlet, mint a manuális "Új feladat" sheet (saveNewTask) —
+  // due lehet üres string is, ha a szövegből nem volt egyértelmű dátum
+  // (lásd parseLocalTaskEventCommand), a felhasználó a naptárban utólag beállíthatja.
+  const newTask={id:uid(),title:s.title,due:s.due||'',priority:'med',type:'checkbox',done:false,progress:0};
+  if(s.dueEnd) newTask.dueEnd=s.dueEnd; // több napos feladat - lásd taskOccursOn
+  App.state.tasks.push(newTask);
+  return '📋 '+(s.title||'Feladat')+' hozzáadva'+(s.due?' ('+fmtDateHu(s.due)+')':'')+' ✓';
+}
+
+function _applyEventSuggestion(s){
+  // Ugyanaz a mezőkészlet, mint a manuális "Új esemény" sheet (saveNewEvent, lásd
+  // App.state.events.push) — date lehet üres, ha a szövegből nem volt egyértelmű
+  // dátum, ekkor a mai napra kerül (a naptárban utólag áthelyezhető).
+  const newEvent={id:uid(),date:s.date||todayISO(),title:s.title,time:s.time||'',type:s.eventType||'esemeny'};
+  if(s.endDate) newEvent.endDate=s.endDate; // több napos esemény - lásd eventOccursOn
+  App.state.events.push(newEvent);
+  return '🗓️ '+(s.title||'Esemény')+' hozzáadva'+(s.date?' ('+fmtDateHu(s.date)+(s.time?', '+s.time:'')+')':'')+' ✓';
+}
+
+function _applyWorkoutSuggestion(s){
+  // Ugyanaz a mezőkészlet, mint a manuális "Új edzés" sheet (saveNewWorkout, lásd
+  // App.state.workouts.push).
+  const muscleGroups = Array.isArray(s.muscleGroups) ? s.muscleGroups.filter(m=>MUSCLE_GROUPS.some(mg=>mg.id===m)) : [];
+  const entry = {id:uid(),category:s.category||'Edzés',date:s.date||todayISO(),durationMin:parseInt(s.durationMin)||null,notes:s.notes||'',muscleGroups};
+  App.state.workouts.push(entry);
+  // Ha a kártyán energiahatás is meg lett adva (mindig a mai edzésnél kínáljuk fel,
+  // lásd renderAiChat/parseLocalWorkoutCommand), egyetlen jóváhagyással a
+  // App.state.activities-be is felkerül ugyanaz az edzés - így nem kell egy MÁSODIK
+  // "⚡ ... naplózása" kártyát is jóváhagyni ugyanahhoz az edzéshez.
+  if(s.energyBefore!=null && s.energyAfter!=null){
+    App.state.activities.push({id:uid(), type:'edzes', label:s.category||'Edzés', icon:'🏋️',
+      date:s.date||todayISO(), durationMin:parseInt(s.durationMin)||30,
+      physical:6, mental:4, experience:6,
+      energyBefore:s.energyBefore, energyAfter:s.energyAfter, note:''});
+  }
+  pushWorkoutFollowUp(entry);
+  return '💪 '+(s.category||'Edzés')+' naplózva'+(s.date?' ('+fmtDateHu(s.date)+')':'')+' ✓';
+}
+
+function _applyRpgQuestAddSuggestion(s){
+  // Ugyanaz a mezőkészlet, mint a manuális küldetés-hozzáadás (rpgAddQuest) - azt
+  // hívjuk, hogy a natív streak-mirroring stb. mellékhatásai (ha lennének a
+  // jövőben) egy helyen éljenek, ne duplikálódjanak itt.
+  if(!App.state.rpg || !App.state.rpg.onboarded) return 'Még nincs elindítva az Életkampány.';
+  const track = RPG_TRACK_BY_ID[s.trackId];
+  if(!track || !s.text) return 'Nem sikerült értelmezni a küldetést ✗';
+  const cur = rpgGetCurrentWeekIndex();
+  rpgAddQuest(cur, s.trackId, s.text, Number(s.xp)||10);
+  return '⚔️ '+s.text+' hozzáadva ('+track.name+', +'+(Number(s.xp)||10)+' XP) ✓';
+}
+
+function _applyRpgQuestCompleteSuggestion(s){
+  // A text mezőt (normFin-nel normalizálva, mindkét irányú substring-illesztéssel -
+  // ugyanaz a minta, mint a finance-javaslat meglévő-tétel keresésénél feljebb) a
+  // JELENLEGI ciklus még nem teljesített küldetéseihez illesztjük - lásd
+  // buildAiContext(), ami pontosan ezt a listát adja át kontextusként az AI-nak.
+  if(!App.state.rpg || !App.state.rpg.onboarded) return 'Még nincs elindítva az Életkampány.';
+  const cur = rpgGetCurrentWeekIndex();
+  const week = App.state.rpg.weeks[cur-1];
+  const norm = normFin(s.text||'');
+  let q = null;
+  if(norm && week){
+    q = week.quests.find(x=>!x.done && (!s.trackId || x.trackId===s.trackId) && (normFin(x.text).includes(norm) || norm.includes(normFin(x.text))));
+    if(!q) q = week.quests.find(x=>!x.done && (normFin(x.text).includes(norm) || norm.includes(normFin(x.text))));
+  }
+  if(!q) return 'Nem találtam ehhez illő, még nem teljesített küldetést ebben a ciklusban ✗';
+  rpgToggleQuest(cur, q.id);
+  return null; // rpgToggleQuest saját (XP/szintlépés) toast-ot mutat, ne írjuk felül
+}
+
+function _applyStartJourneySuggestion(s){
+  if(App.ui.tracking) return 'Már fut egy túrakövetés.';
+  startTracking();
+  return '🥾 Túrakövetés elindítva — nyisd meg a Térkép fület a részletekhez.';
+}
+
+function _applyStopJourneySuggestion(s){
+  if(!App.ui.tracking) return 'Nincs éppen futó túrakövetés.';
+  stopTracking(); // maga nyitja meg a "Túra mentése" elnevező ablakot
+  return '⏹️ Túrakövetés leállítva — nevezd el és mentsd a felugró ablakban.';
+}
+
+function _applyActivityLogSuggestion(s){
+  // Ugyanaz a mezőkészlet, mint a manuális "Aktivitás rögzítése" sheet
+  // (saveActivity, lásd App.state.activities.push) - EZ táplálja a
+  // todayEnergyLevel()-t és a tanult energia-átlagokat, NEM a workouts tömb.
+  const type = ACTIVITY_TYPES.find(t=>t.id===s.activityType) || ACTIVITY_TYPES.find(t=>t.id==='egyeb');
+  App.state.activities.push({id:uid(), type:type.id, label:s.label||type.name, icon:type.icon,
+    date:todayISO(), durationMin:parseInt(s.durationMin)||0,
+    physical:parseInt(s.physical)||5, mental:parseInt(s.mental)||5, experience:parseInt(s.experience)||5,
+    energyBefore:parseInt(s.energyBefore)||60, energyAfter:parseInt(s.energyAfter)||50, note:s.note||''});
+  return '⚡ '+(s.label||type.name)+' naplózva (energia '+(parseInt(s.energyBefore)||60)+'→'+(parseInt(s.energyAfter)||50)+') ✓';
+}
+
+function _applyWeightSuggestion(s){
+  // Ugyanaz a mezőkészlet, mint a manuális "Testsúly mérés" sheet (saveWeight,
+  // lásd App.state.weightLog.push) - mindig új bejegyzést ad hozzá, ahogy a
+  // kézi flow is teszi (nem upsertel dátum szerint).
+  if(!(Number(s.kg)>0)) return 'Nem sikerült értelmezni a testsúlyt ✗';
+  App.state.weightLog.push({date:s.date||todayISO(), kg:Number(s.kg)});
+  return '⚖️ '+Number(s.kg)+' kg elmentve ✓';
+}
+
+function _applyHealthLogSuggestion(s){
+  // Ugyanaz az upsert-minta, mint a kézi gyors-bevitel (saveQuickLog): a mai
+  // (vagy megadott) napi healthLog bejegyzést keresi/hozza létre, és csak a
+  // ténylegesen megadott mezőket írja felül.
+  const iso = s.date||todayISO();
+  let entry = App.state.healthLog.find(h=>h.date===iso);
+  if(!entry){ entry={date:iso}; App.state.healthLog.push(entry); }
+  const parts=[];
+  if(s.sleepH!=null && !isNaN(s.sleepH)){ entry.sleepH=Number(s.sleepH); parts.push(Number(s.sleepH)+' óra alvás'); }
+  if(s.steps!=null && !isNaN(s.steps)){ entry.steps=Number(s.steps); parts.push(Number(s.steps)+' lépés'); }
+  if(s.pulse!=null && !isNaN(s.pulse)){ entry.pulse=Number(s.pulse); parts.push(Number(s.pulse)+' pulzus'); }
+  if(!parts.length) return 'Nem volt megadott egészségadat ✗';
+  return '🩺 '+parts.join(', ')+' elmentve ✓';
+}
+
+function _applyDiscretionarySpendSuggestion(s){
+  // Csak MEGLÉVŐ kategória terhére könyvel (saveSpend mintája) - egy nem
+  // létező kategóriához nem talál ki keretet/limitet, azt a felhasználónak
+  // kell előbb létrehoznia a Pénzügyek fülön.
+  const target = normFin(s.name||'');
+  const item = (App.state.finance.discretionary||[]).find(x=>normFin(x.name)===target)
+    || (App.state.finance.discretionary||[]).find(x=>normFin(x.name).includes(target)||target.includes(normFin(x.name)));
+  if(!item) return 'Nincs ilyen egyéb kiadás kategória — vedd fel előbb a Pénzügyek fülön ✗';
+  const amount = Number(s.amount)||0;
+  item.spent = (item.spent||0) + amount;
+  const dupWarning = recordSpendAndCheckDup(item.id, amount, todayISO(), 'ai');
+  return '🛍️ '+item.name+': +'+amount.toLocaleString('hu-HU')+' Ft költés rögzítve ✓' + (dupWarning ? ' ⚠️ '+dupWarning : '');
+}
+
+function _applySavingsAddSuggestion(s){
+  const target = normFin(s.name||'');
+  const item = (App.state.finance.savings||[]).find(x=>normFin(x.name)===target)
+    || (App.state.finance.savings||[]).find(x=>normFin(x.name).includes(target)||target.includes(normFin(x.name)));
+  if(!item) return 'Nincs ilyen megtakarítási cél — vedd fel előbb a Pénzügyek fülön ✗';
+  item.saved = (item.saved||0) + (Number(s.amount)||0);
+  return '🏦 '+item.name+': +'+(Number(s.amount)||0).toLocaleString('hu-HU')+' Ft megtakarítás rögzítve ✓';
+}
+
+function _applyJournalSuggestion(s){
+  if(!s.mood && !s.text) return 'Adj meg hangulatot vagy szöveget ✗';
+  App.state.journal.unshift({id:uid(), date:todayISO(), mood:s.mood||null, text:s.text||''});
+  return '📓 Napló bejegyzés mentve ✓';
+}
+
+function _applySkillUnlockSuggestion(s){
+  // Csak akkor old fel, ha a skill "elérhető" (a szülője már fel van oldva,
+  // ő maga még nem) - lásd skillState(). Ez szubjektív, önbevallásos adat
+  // (a felhasználó dönti el, hogy valóban elérte-e), ezért itt sincs
+  // automatikus "elég edzés -> feloldva" számítás.
+  const norm = normFin(s.skillName||'');
+  const node = allSkillNodes().find(n=>normFin(n.name)===norm)
+    || allSkillNodes().find(n=>normFin(n.name).includes(norm)||norm.includes(normFin(n.name)));
+  if(!node) return 'Nem találtam ilyen nevű skillt ✗';
+  if(App.state.skills[node.id]) return node.name+' már fel van oldva.';
+  if(skillState(node)!=='available') return node.name+' még nem érhető el (előbb a szülő skillt kell feloldani).';
+  App.state.skills[node.id] = true;
+  return '🌟 '+node.name+' feloldva! 🎉';
+}
+
+const AI_SUGGESTION_APPLIERS = {
+  finance: _applyFinanceSuggestion,
+  activity_template: _applyActivityTemplateSuggestion,
+  income: _applyIncomeSuggestion,
+  schedule_pattern: _applySchedulePatternSuggestion,
+  meal: _applyMealSuggestion,
+  task: _applyTaskSuggestion,
+  event: _applyEventSuggestion,
+  workout: _applyWorkoutSuggestion,
+  rpg_quest_add: _applyRpgQuestAddSuggestion,
+  rpg_quest_complete: _applyRpgQuestCompleteSuggestion,
+  start_journey: _applyStartJourneySuggestion,
+  stop_journey: _applyStopJourneySuggestion,
+  activity_log: _applyActivityLogSuggestion,
+  weight: _applyWeightSuggestion,
+  health_log: _applyHealthLogSuggestion,
+  discretionary_spend: _applyDiscretionarySpendSuggestion,
+  savings_add: _applySavingsAddSuggestion,
+  journal: _applyJournalSuggestion,
+  skill_unlock: _applySkillUnlockSuggestion,
+};
+
 function applyAiSuggestion(s){
-  if(s.type==='finance'){
-    App.state.finance = App.state.finance || defaultState().finance;
-    App.state.finance.mandatory = Array.isArray(App.state.finance.mandatory) ? App.state.finance.mandatory : [];
-    const target = normFin(s.name);
-    let item = App.state.finance.mandatory.find(x=>normFin(x.name)===target)
-      || App.state.finance.mandatory.find(x=>normFin(x.name).includes(target)||target.includes(normFin(x.name)));
-    if(!item){ item={id:uid(),name:s.name,icon:sanitizeIcon(s.icon)||'💳',amount:0,type:'valtozo'}; App.state.finance.mandatory.push(item); }
-    item.amount = Number(s.amount)||0;
-    return item.name+': '+item.amount.toLocaleString('hu-HU')+' Ft mentve a Pénzügyekbe ✓';
-  }
-  if(s.type==='activity_template'){
-    const validTypes=['nappal','ejszaka','pihen','szabi','egyeb'];
-    if(!validTypes.includes(s.dayType) || !s.activity) return 'Nem sikerült értelmezni a mintát';
-    const a=s.activity;
-    const typeId = matchActivityTypeId(a.label);
-    const tpl = {type:typeId, label:a.label||'Aktivitás', icon:sanitizeIcon(a.icon)||(ACTIVITY_TYPES.find(t=>t.id===typeId)||{}).icon||'⭐',
-      durationMin:parseInt(a.durationMin)||0, physical:parseInt(a.physical)||5, mental:parseInt(a.mental)||5,
-      experience:parseInt(a.experience)||5, energyBefore:parseInt(a.energyBefore)||60, energyAfter:parseInt(a.energyAfter)||50};
-    App.state.dayTypeTemplates[s.dayType] = tpl;
-    const applied = applyDayTypeTemplateForward(s.dayType, 60);
-    return 'Minta mentve · '+applied+' jövőbeli '+(DAY_TYPE_SHORT[s.dayType]||s.dayType)+' napra felkerült ✓';
-  }
-  if(s.type==='income'){
-    App.state.finance = App.state.finance || defaultState().finance;
-    App.state.finance.monthlyIncome = Number(s.amount)||0;
-    return 'Havi bevétel frissítve: '+App.state.finance.monthlyIncome.toLocaleString('hu-HU')+' Ft ✓';
-  }
-  if(s.type==='schedule_pattern'){
-    const validTypes=['nappal','ejszaka','pihen','szabi','egyeb'];
-    if(!Array.isArray(s.pattern) || !s.pattern.length || !s.pattern.every(p=>validTypes.includes(p)) || !s.startDate){
-      return 'Nem sikerült értelmezni a műszakrendet';
-    }
-    App.state.schedule.pattern = s.pattern;
-    App.state.schedule.startDate = s.startDate;
-    return 'Műszakrend beállítva ('+s.pattern.length+' napos ciklus) ✓';
-  }
-  if(s.type==='meal'){
-    // App.state.nutrition.log a valódi étkezésnapló (lásd saveMeal / renderNutNap),
-    // 'meal' kulccsal — NEM egy külön 'meals' tömb 'name' kulccsal.
-    App.state.nutrition = App.state.nutrition || {targets:{kcal:0,protein:0,carbs:0,fat:0},log:[]};
-    App.state.nutrition.log = Array.isArray(App.state.nutrition.log) ? App.state.nutrition.log : [];
-    App.state.nutrition.log.push({id:uid(),date:todayISO(),meal:s.name,
-      kcal:Number(s.kcal)||0,protein:Number(s.protein)||0,carbs:Number(s.carbs)||0,fat:Number(s.fat)||0});
-    return '🍽️ '+(s.name||'Étkezés')+' naplózva ('+(Number(s.kcal)||0)+' kcal) ✓';
-  }
-  if(s.type==='task'){
-    // Ugyanaz a mezőkészlet, mint a manuális "Új feladat" sheet (saveNewTask) —
-    // due lehet üres string is, ha a szövegből nem volt egyértelmű dátum
-    // (lásd parseLocalTaskEventCommand), a felhasználó a naptárban utólag beállíthatja.
-    const newTask={id:uid(),title:s.title,due:s.due||'',priority:'med',type:'checkbox',done:false,progress:0};
-    if(s.dueEnd) newTask.dueEnd=s.dueEnd; // több napos feladat - lásd taskOccursOn
-    App.state.tasks.push(newTask);
-    return '📋 '+(s.title||'Feladat')+' hozzáadva'+(s.due?' ('+fmtDateHu(s.due)+')':'')+' ✓';
-  }
-  if(s.type==='event'){
-    // Ugyanaz a mezőkészlet, mint a manuális "Új esemény" sheet (saveNewEvent, lásd
-    // App.state.events.push) — date lehet üres, ha a szövegből nem volt egyértelmű
-    // dátum, ekkor a mai napra kerül (a naptárban utólag áthelyezhető).
-    const newEvent={id:uid(),date:s.date||todayISO(),title:s.title,time:s.time||'',type:s.eventType||'esemeny'};
-    if(s.endDate) newEvent.endDate=s.endDate; // több napos esemény - lásd eventOccursOn
-    App.state.events.push(newEvent);
-    return '🗓️ '+(s.title||'Esemény')+' hozzáadva'+(s.date?' ('+fmtDateHu(s.date)+(s.time?', '+s.time:'')+')':'')+' ✓';
-  }
-  if(s.type==='workout'){
-    // Ugyanaz a mezőkészlet, mint a manuális "Új edzés" sheet (saveNewWorkout, lásd
-    // App.state.workouts.push).
-    const muscleGroups = Array.isArray(s.muscleGroups) ? s.muscleGroups.filter(m=>MUSCLE_GROUPS.some(mg=>mg.id===m)) : [];
-    const entry = {id:uid(),category:s.category||'Edzés',date:s.date||todayISO(),durationMin:parseInt(s.durationMin)||null,notes:s.notes||'',muscleGroups};
-    App.state.workouts.push(entry);
-    // Ha a kártyán energiahatás is meg lett adva (mindig a mai edzésnél kínáljuk fel,
-    // lásd renderAiChat/parseLocalWorkoutCommand), egyetlen jóváhagyással a
-    // App.state.activities-be is felkerül ugyanaz az edzés - így nem kell egy MÁSODIK
-    // "⚡ ... naplózása" kártyát is jóváhagyni ugyanahhoz az edzéshez.
-    if(s.energyBefore!=null && s.energyAfter!=null){
-      App.state.activities.push({id:uid(), type:'edzes', label:s.category||'Edzés', icon:'🏋️',
-        date:s.date||todayISO(), durationMin:parseInt(s.durationMin)||30,
-        physical:6, mental:4, experience:6,
-        energyBefore:s.energyBefore, energyAfter:s.energyAfter, note:''});
-    }
-    pushWorkoutFollowUp(entry);
-    return '💪 '+(s.category||'Edzés')+' naplózva'+(s.date?' ('+fmtDateHu(s.date)+')':'')+' ✓';
-  }
-  if(s.type==='rpg_quest_add'){
-    // Ugyanaz a mezőkészlet, mint a manuális küldetés-hozzáadás (rpgAddQuest) - azt
-    // hívjuk, hogy a natív streak-mirroring stb. mellékhatásai (ha lennének a
-    // jövőben) egy helyen éljenek, ne duplikálódjanak itt.
-    if(!App.state.rpg || !App.state.rpg.onboarded) return 'Még nincs elindítva az Életkampány.';
-    const track = RPG_TRACK_BY_ID[s.trackId];
-    if(!track || !s.text) return 'Nem sikerült értelmezni a küldetést ✗';
-    const cur = rpgGetCurrentWeekIndex();
-    rpgAddQuest(cur, s.trackId, s.text, Number(s.xp)||10);
-    return '⚔️ '+s.text+' hozzáadva ('+track.name+', +'+(Number(s.xp)||10)+' XP) ✓';
-  }
-  if(s.type==='rpg_quest_complete'){
-    // A text mezőt (normFin-nel normalizálva, mindkét irányú substring-illesztéssel -
-    // ugyanaz a minta, mint a finance-javaslat meglévő-tétel keresésénél feljebb) a
-    // JELENLEGI ciklus még nem teljesített küldetéseihez illesztjük - lásd
-    // buildAiContext(), ami pontosan ezt a listát adja át kontextusként az AI-nak.
-    if(!App.state.rpg || !App.state.rpg.onboarded) return 'Még nincs elindítva az Életkampány.';
-    const cur = rpgGetCurrentWeekIndex();
-    const week = App.state.rpg.weeks[cur-1];
-    const norm = normFin(s.text||'');
-    let q = null;
-    if(norm && week){
-      q = week.quests.find(x=>!x.done && (!s.trackId || x.trackId===s.trackId) && (normFin(x.text).includes(norm) || norm.includes(normFin(x.text))));
-      if(!q) q = week.quests.find(x=>!x.done && (normFin(x.text).includes(norm) || norm.includes(normFin(x.text))));
-    }
-    if(!q) return 'Nem találtam ehhez illő, még nem teljesített küldetést ebben a ciklusban ✗';
-    rpgToggleQuest(cur, q.id);
-    return null; // rpgToggleQuest saját (XP/szintlépés) toast-ot mutat, ne írjuk felül
-  }
-  if(s.type==='start_journey'){
-    if(App.ui.tracking) return 'Már fut egy túrakövetés.';
-    startTracking();
-    return '🥾 Túrakövetés elindítva — nyisd meg a Térkép fület a részletekhez.';
-  }
-  if(s.type==='stop_journey'){
-    if(!App.ui.tracking) return 'Nincs éppen futó túrakövetés.';
-    stopTracking(); // maga nyitja meg a "Túra mentése" elnevező ablakot
-    return '⏹️ Túrakövetés leállítva — nevezd el és mentsd a felugró ablakban.';
-  }
-  if(s.type==='activity_log'){
-    // Ugyanaz a mezőkészlet, mint a manuális "Aktivitás rögzítése" sheet
-    // (saveActivity, lásd App.state.activities.push) - EZ táplálja a
-    // todayEnergyLevel()-t és a tanult energia-átlagokat, NEM a workouts tömb.
-    const type = ACTIVITY_TYPES.find(t=>t.id===s.activityType) || ACTIVITY_TYPES.find(t=>t.id==='egyeb');
-    App.state.activities.push({id:uid(), type:type.id, label:s.label||type.name, icon:type.icon,
-      date:todayISO(), durationMin:parseInt(s.durationMin)||0,
-      physical:parseInt(s.physical)||5, mental:parseInt(s.mental)||5, experience:parseInt(s.experience)||5,
-      energyBefore:parseInt(s.energyBefore)||60, energyAfter:parseInt(s.energyAfter)||50, note:s.note||''});
-    return '⚡ '+(s.label||type.name)+' naplózva (energia '+(parseInt(s.energyBefore)||60)+'→'+(parseInt(s.energyAfter)||50)+') ✓';
-  }
-  if(s.type==='weight'){
-    // Ugyanaz a mezőkészlet, mint a manuális "Testsúly mérés" sheet (saveWeight,
-    // lásd App.state.weightLog.push) - mindig új bejegyzést ad hozzá, ahogy a
-    // kézi flow is teszi (nem upsertel dátum szerint).
-    if(!(Number(s.kg)>0)) return 'Nem sikerült értelmezni a testsúlyt ✗';
-    App.state.weightLog.push({date:s.date||todayISO(), kg:Number(s.kg)});
-    return '⚖️ '+Number(s.kg)+' kg elmentve ✓';
-  }
-  if(s.type==='health_log'){
-    // Ugyanaz az upsert-minta, mint a kézi gyors-bevitel (saveQuickLog): a mai
-    // (vagy megadott) napi healthLog bejegyzést keresi/hozza létre, és csak a
-    // ténylegesen megadott mezőket írja felül.
-    const iso = s.date||todayISO();
-    let entry = App.state.healthLog.find(h=>h.date===iso);
-    if(!entry){ entry={date:iso}; App.state.healthLog.push(entry); }
-    const parts=[];
-    if(s.sleepH!=null && !isNaN(s.sleepH)){ entry.sleepH=Number(s.sleepH); parts.push(Number(s.sleepH)+' óra alvás'); }
-    if(s.steps!=null && !isNaN(s.steps)){ entry.steps=Number(s.steps); parts.push(Number(s.steps)+' lépés'); }
-    if(s.pulse!=null && !isNaN(s.pulse)){ entry.pulse=Number(s.pulse); parts.push(Number(s.pulse)+' pulzus'); }
-    if(!parts.length) return 'Nem volt megadott egészségadat ✗';
-    return '🩺 '+parts.join(', ')+' elmentve ✓';
-  }
-  if(s.type==='discretionary_spend'){
-    // Csak MEGLÉVŐ kategória terhére könyvel (saveSpend mintája) - egy nem
-    // létező kategóriához nem talál ki keretet/limitet, azt a felhasználónak
-    // kell előbb létrehoznia a Pénzügyek fülön.
-    const target = normFin(s.name||'');
-    const item = (App.state.finance.discretionary||[]).find(x=>normFin(x.name)===target)
-      || (App.state.finance.discretionary||[]).find(x=>normFin(x.name).includes(target)||target.includes(normFin(x.name)));
-    if(!item) return 'Nincs ilyen egyéb kiadás kategória — vedd fel előbb a Pénzügyek fülön ✗';
-    const amount = Number(s.amount)||0;
-    item.spent = (item.spent||0) + amount;
-    const dupWarning = recordSpendAndCheckDup(item.id, amount, todayISO(), 'ai');
-    return '🛍️ '+item.name+': +'+amount.toLocaleString('hu-HU')+' Ft költés rögzítve ✓' + (dupWarning ? ' ⚠️ '+dupWarning : '');
-  }
-  if(s.type==='savings_add'){
-    const target = normFin(s.name||'');
-    const item = (App.state.finance.savings||[]).find(x=>normFin(x.name)===target)
-      || (App.state.finance.savings||[]).find(x=>normFin(x.name).includes(target)||target.includes(normFin(x.name)));
-    if(!item) return 'Nincs ilyen megtakarítási cél — vedd fel előbb a Pénzügyek fülön ✗';
-    item.saved = (item.saved||0) + (Number(s.amount)||0);
-    return '🏦 '+item.name+': +'+(Number(s.amount)||0).toLocaleString('hu-HU')+' Ft megtakarítás rögzítve ✓';
-  }
-  if(s.type==='journal'){
-    if(!s.mood && !s.text) return 'Adj meg hangulatot vagy szöveget ✗';
-    App.state.journal.unshift({id:uid(), date:todayISO(), mood:s.mood||null, text:s.text||''});
-    return '📓 Napló bejegyzés mentve ✓';
-  }
-  if(s.type==='skill_unlock'){
-    // Csak akkor old fel, ha a skill "elérhető" (a szülője már fel van oldva,
-    // ő maga még nem) - lásd skillState(). Ez szubjektív, önbevallásos adat
-    // (a felhasználó dönti el, hogy valóban elérte-e), ezért itt sincs
-    // automatikus "elég edzés -> feloldva" számítás.
-    const norm = normFin(s.skillName||'');
-    const node = allSkillNodes().find(n=>normFin(n.name)===norm)
-      || allSkillNodes().find(n=>normFin(n.name).includes(norm)||norm.includes(normFin(n.name)));
-    if(!node) return 'Nem találtam ilyen nevű skillt ✗';
-    if(App.state.skills[node.id]) return node.name+' már fel van oldva.';
-    if(skillState(node)!=='available') return node.name+' még nem érhető el (előbb a szülő skillt kell feloldani).';
-    App.state.skills[node.id] = true;
-    return '🌟 '+node.name+' feloldva! 🎉';
-  }
+  const applier = AI_SUGGESTION_APPLIERS[s.type];
+  if(applier) return applier(s);
   // Ismeretlen javaslat-típus: NEM mentünk semmit "találgatva" (korábban minden fel
   // nem ismert type itt hibásan feladatként mentődött, ami 'event' javaslatra téves
   // volt) — inkább jelezzük, hogy nem sikerült feldolgozni.
@@ -6936,28 +7000,28 @@ RENDERERS.kampany = function(){
    marad, mint előtte, és soha nem megy ki valódi hálózati kérés az
    api.anthropic.com felé (callMotivAI mindig helyben kipatch-elve fut az
    ehhez szükséges ellenőrzéseknél). */
-async function runRegressionChecks(){
+// #ai-input csak akkor van a DOM-ban, ha épp a MotivAI chat nézet (RENDERERS.ai)
+// van nyitva. A sendAiMessage() ezt olvassa közvetlenül — ha diagnosztikát más
+// nézetről futtatjuk, ideiglenesen pótoljuk egy rejtett, nem-UI elemmel, majd
+// a teszt végén eltávolítjuk (ha mi hoztuk létre), vagy visszaállítjuk az
+// eredeti értékét (ha már létezett, azaz a valódi UI-hoz tartozik).
+function ensureAiInput(){
+  const existing=document.getElementById('ai-input');
+  if(existing) return {el:existing, created:false, prevValue:existing.value};
+  const el=document.createElement('input');
+  el.type='text'; el.id='ai-input'; el.style.display='none';
+  document.body.appendChild(el);
+  return {el, created:true, prevValue:''};
+}
+function releaseAiInput(ref){
+  if(!ref) return;
+  if(ref.created){ if(ref.el.parentNode) ref.el.parentNode.removeChild(ref.el); }
+  else { ref.el.value=ref.prevValue; }
+}
+
+async function regressionCheckAiDuplicateGuard(){
   const results=[];
   function rec(name, pass, detail){ results.push({'Teszt':name, 'Eredmény':pass?'PASS':'FAIL', 'Részlet':detail||''}); }
-
-  // #ai-input csak akkor van a DOM-ban, ha épp a MotivAI chat nézet (RENDERERS.ai)
-  // van nyitva. A sendAiMessage() ezt olvassa közvetlenül — ha diagnosztikát más
-  // nézetről futtatjuk, ideiglenesen pótoljuk egy rejtett, nem-UI elemmel, majd
-  // a teszt végén eltávolítjuk (ha mi hoztuk létre), vagy visszaállítjuk az
-  // eredeti értékét (ha már létezett, azaz a valódi UI-hoz tartozik).
-  function ensureAiInput(){
-    const existing=document.getElementById('ai-input');
-    if(existing) return {el:existing, created:false, prevValue:existing.value};
-    const el=document.createElement('input');
-    el.type='text'; el.id='ai-input'; el.style.display='none';
-    document.body.appendChild(el);
-    return {el, created:true, prevValue:''};
-  }
-  function releaseAiInput(ref){
-    if(!ref) return;
-    if(ref.created){ if(ref.el.parentNode) ref.el.parentNode.removeChild(ref.el); }
-    else { ref.el.value=ref.prevValue; }
-  }
 
   // ---- 1) Dupla-küldés guard (_aiSending) ----
   try{
@@ -6989,6 +7053,13 @@ async function runRegressionChecks(){
   }catch(e){
     rec('1) Dupla AI-üzenet guard (_aiSending)', false, 'Hiba a teszt közben: '+(e&&e.message?e.message:e));
   }
+
+  return results;
+}
+
+function regressionCheckLocalTaskFinanceParsing(){
+  const results=[];
+  function rec(name, pass, detail){ results.push({'Teszt':name, 'Eredmény':pass?'PASS':'FAIL', 'Részlet':detail||''}); }
 
   // ---- 2) "Feladat rögzítése holnapra: garázs befizetni 16k ft" -> helyi 'task' felismerés,
   //         NEM finance tétel (a financeContextExclude-nak továbbra is ki kell zárnia a finance
@@ -7152,6 +7223,13 @@ async function runRegressionChecks(){
     rec('2e) parseHUFAmount: 1-3 jegyű összeg csak "ft"/"forint" mértékegységgel (450, 99), rövid szám mértékegység nélkül NEM összeg (3 feladat)', false, 'Hiba a teszt közben: '+(e&&e.message?e.message:e));
   }
 
+  return results;
+}
+
+function regressionCheckLocalMealParsing(){
+  const results=[];
+  function rec(name, pass, detail){ results.push({'Teszt':name, 'Eredmény':pass?'PASS':'FAIL', 'Részlet':detail||''}); }
+
   // ---- 3) "Rögzíts étkezést: két tojás rántottának" -> helyi étkezés-felismerés ----
   try{
     const baseLen=App.state.aiChat.length;
@@ -7229,6 +7307,13 @@ async function runRegressionChecks(){
   }catch(e){
     rec('3c) "meg-" igekötős étkezés-felismerés (Megettem egy tojást)', false, 'Hiba a teszt közben: '+(e&&e.message?e.message:e));
   }
+
+  return results;
+}
+
+async function regressionCheckLocalEventParsing(){
+  const results=[];
+  function rec(name, pass, detail){ results.push({'Teszt':name, 'Eredmény':pass?'PASS':'FAIL', 'Részlet':detail||''}); }
 
   // ---- 4) "Rögzíts eseményt holnapra. Fogászat, 16 óra" -> helyi 'event' felismerés ----
   // 4a) A PM-döntés MOST felülíródott: a feladat/esemény-rögzítés API kulcs nélkül, helyben is
@@ -7316,6 +7401,13 @@ async function runRegressionChecks(){
     rec('4c) Több feladat egy üzenetben (2 db task javaslat)', false, 'Hiba a teszt közben: '+(e&&e.message?e.message:e));
   }
 
+  return results;
+}
+
+function regressionCheckDateHelpers(){
+  const results=[];
+  function rec(name, pass, detail){ results.push({'Teszt':name, 'Eredmény':pass?'PASS':'FAIL', 'Részlet':detail||''}); }
+
   // ---- 5) toLocalISO pontos léptetése év-/hónapváltás határán ----
   try{
     const t1=new Date(2025,11,31); t1.setDate(t1.getDate()+1); // 2025-12-31 -> 2026-01-01 (évváltás)
@@ -7359,6 +7451,13 @@ async function runRegressionChecks(){
     rec('6) todayISO helyi dátum + toISOString guard', false, 'Hiba a teszt közben: '+(e&&e.message?e.message:e));
   }
 
+  return results;
+}
+
+function regressionCheckOccursOnHelpers(){
+  const results=[];
+  function rec(name, pass, detail){ results.push({'Teszt':name, 'Eredmény':pass?'PASS':'FAIL', 'Részlet':detail||''}); }
+
   // ---- 7) taskOccursOn: due/dueEnd tartomány pontosan a tartományon belüli napokra igaz ----
   try{
     const t={id:'x',title:'teszt',due:'2026-03-10',dueEnd:'2026-03-12'};
@@ -7382,6 +7481,18 @@ async function runRegressionChecks(){
   }catch(e){
     rec('8) eventOccursOn tartomány-illesztés (date 03-10 .. endDate 03-12)', false, 'Hiba a teszt közben: '+(e&&e.message?e.message:e));
   }
+
+  return results;
+}
+
+async function runRegressionChecks(){
+  const results=[];
+  results.push(...(await regressionCheckAiDuplicateGuard()));
+  results.push(...regressionCheckLocalTaskFinanceParsing());
+  results.push(...regressionCheckLocalMealParsing());
+  results.push(...(await regressionCheckLocalEventParsing()));
+  results.push(...regressionCheckDateHelpers());
+  results.push(...regressionCheckOccursOnHelpers());
 
   const failCount=results.filter(r=>r['Eredmény']==='FAIL').length;
   if(typeof console.table==='function') console.table(results);
