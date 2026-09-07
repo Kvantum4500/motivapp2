@@ -506,8 +506,10 @@ function defaultState(){
       favorites:[],
       bossNotified:[], // quarter indexek (0-3), amikhez már ment natív "boss legyőzve" értesítés
       cycleSummaryNotified:[], // ciklusindexek, amikhez már ment ciklus-vége AI-összefoglaló (natív push + aiChat), ld. rpgCheckCycleSummary()
+      workoutStreakQuestSuggestedDates:[], // ISO dátumok (a sorozat záró napja), amikhez már ment "edzés-sorozat" küldetés-javaslat (ld. checkWorkoutStreakQuest) — ugyanaz a "csak egyszer" minta, mint bossNotified-nél
       onboarded:false
-    }
+    },
+    cycleCoach:{ lastSuggestedDate:null }, // ld. maybeSuggestCycleAwareWorkout — legfeljebb naponta egyszer ajánlunk fel ciklus-alapú edzés-tippet
   };
 }
 
@@ -564,7 +566,9 @@ async function loadState(){
       if(!Array.isArray(App.state.rpg.favorites)) App.state.rpg.favorites = [];
       if(!Array.isArray(App.state.rpg.bossNotified)) App.state.rpg.bossNotified = [];
       if(!Array.isArray(App.state.rpg.cycleSummaryNotified)) App.state.rpg.cycleSummaryNotified = [];
+      if(!Array.isArray(App.state.rpg.workoutStreakQuestSuggestedDates)) App.state.rpg.workoutStreakQuestSuggestedDates = [];
       if(typeof App.state.rpg.onboarded !== 'boolean') App.state.rpg.onboarded = false;
+      if(!App.state.cycleCoach || typeof App.state.cycleCoach !== 'object') App.state.cycleCoach = d.cycleCoach;
     } else {
       App.state = defaultState();
     }
@@ -1696,6 +1700,7 @@ function layoutTree(nodes){
 }
 
 RENDERERS.fejlodes = function(){
+  maybeSuggestCycleAwareWorkout(); // Ötlet #36 - ld. a definíciónál: a Fejlődés nézet megnyitása a természetes belépési pont
   const el = document.getElementById('view-fejlodes');
   el.innerHTML = `
     <div class="subtabs">
@@ -2235,6 +2240,7 @@ function saveNewWorkout(){
       energyBefore:60, energyAfter:50, note:''});
   }
   pushWorkoutFollowUp(entry); // ld. a definíciónál - most már csak a kapcsolódó skilleket ajánlja fel
+  checkWorkoutStreakQuest(); // Ötlet #35 egészség-ág - ld. a definíciónál
   saveState(); closeSheet(); toast('Edzés naplózva 💪'); renderApp();
 }
 
@@ -3733,6 +3739,144 @@ function pushWorkoutFollowUp(workout){
   if(!suggestions.length) return;
   App.state.aiChat.push({role:'assistant', content:'💪 Naplózva! Még egy dolog, amit ez érinthet: elérted-e valamelyik kapcsolódó skillt (jelöld lent, ha igen).', suggestions});
 }
+/* checkWorkoutStreakQuest: Ötlet #35 (pénzügyi/egészség célokból automatikus
+   Kaland-küldetés) egészség-ága — ha az elmúlt WORKOUT_STREAK_TARGET naptári
+   napon MINDEGYIKEN volt naplózott edzés (App.state.workouts, dátum szerint,
+   MAI naptól visszafelé), egy "fizikai" Kaland-küldetést ajánlunk fel
+   rpg_quest_add javaslatként — MEGERŐSÍTENDŐ kártyaként, ugyanúgy, mint minden
+   más AI-javaslat (ld. pushWorkoutFollowUp fenti mintáját). Jelenleg csak a
+   kézi edzés-mentésből (saveNewWorkout) hívjuk, új edzés MENTÉSE után, nem egy
+   külön időzítővel/pollerrel — az applyAiSuggestion 's.type===workout' ágát
+   (ahonnan pushWorkoutFollowUp fenti MÁSIK hívása is fut) SZÁNDÉKOSAN nem
+   módosítottuk itt, hogy ne ütközzön egy párhuzamosan futó applyAiSuggestion-
+   refaktorral - emiatt egy AI-chat/helyi-parancson át naplózott (nem a
+   kézi lapon rögzített) edzés egyelőre NEM számít bele ebbe a sorozat-
+   figyelésbe. Ha ez zavaró, egy követő módosítás hozzáadhatja ugyanezt a
+   hívást oda is, a refaktor lezárása után.
+   Duplikáció-védelem: App.state.rpg.workoutStreakQuestSuggestedDates — a már
+   felajánlott sorozat ZÁRÓ napjait tárolja, ugyanúgy, ahogy bossNotified a már
+   értesített negyedév-indexeket (ld. ott) — így ugyanaz a lezárt sorozat nem
+   ajánlja fel magát újra minden egyes aznapi edzésnaplózásnál. */
+function checkWorkoutStreakQuest(){
+  if(!App.state.rpg || !App.state.rpg.onboarded) return;
+  const WORKOUT_STREAK_TARGET = 5;
+  const workoutDates = new Set(App.state.workouts.map(w=>w.date));
+  let streak = 0;
+  const cursor = new Date();
+  for(let i=0;i<WORKOUT_STREAK_TARGET;i++){
+    if(!workoutDates.has(toLocalISO(cursor))) break;
+    streak++;
+    cursor.setDate(cursor.getDate()-1);
+  }
+  if(streak < WORKOUT_STREAK_TARGET) return;
+  const streakEndIso = todayISO();
+  if(!Array.isArray(App.state.rpg.workoutStreakQuestSuggestedDates)) App.state.rpg.workoutStreakQuestSuggestedDates = [];
+  if(App.state.rpg.workoutStreakQuestSuggestedDates.includes(streakEndIso)) return;
+  App.state.rpg.workoutStreakQuestSuggestedDates.push(streakEndIso);
+  App.state.aiChat.push({role:'assistant', content:'🔥 '+WORKOUT_STREAK_TARGET+' egymást követő napon mozogtál! Ezt is bevihetjük az Életkampányba:',
+    suggestions:[{type:'rpg_quest_add', trackId:'physical', text:WORKOUT_STREAK_TARGET+' napos mozgás-sorozat tartása', xp:25}]});
+}
+/* checkSavingsGoalMilestone: Ötlet #35 (pénzügyi cél -> Kaland-küldetés) és
+   Ötlet #39 (megtakarítási cél teljesítése -> skill-feloldás javaslat) közös
+   belépési pontja — mindkettő ugyanahhoz az eseményhez (egy megtakarítási cél
+   eléri a 100%-ot) kötődik, ezért egyetlen MotivAI-üzenetben, egyszerre két
+   javaslat-kártyaként ajánljuk fel őket, ugyanúgy, ahogy pushWorkoutFollowUp is
+   több skill_unlock javaslatot tehet egy üzenetbe. Csak a KÉZI befizetés-mentés
+   (saveSavingsAdd) hívja - az applyAiSuggestion 's.type===savings_add' ágát
+   szándékosan NEM módosítjuk itt (azt egy másik ágon párhuzamosan
+   refaktorálják, ld. dev-jegyzet a repó tetején).
+   A skill_unlock javaslathoz: a SKILL_DEFS-ben (ld. ott) jelenleg nincs
+   kifejezetten "finance" témájú/track-cimkével ellátott skill-csomópont (mind a
+   4 sport - kondi/futás/kajak/streetwo - fizikai jellegű), ezért a legjobb
+   elérhető közelítés a legelső, jelenleg "elérhető" (skillState()==='available')
+   skill felajánlása - így a felhasználó egy pénzügyi mérföldkövet egy olyan
+   fejlődési lépéssel ünnepelhet meg, ami épp esedékes, még ha nem is
+   pénzügy-specifikus. */
+function checkSavingsGoalMilestone(goal){
+  if(!App.state.rpg || !App.state.rpg.onboarded) return;
+  if(!goal || !(goal.target>0) || (goal.saved||0) < goal.target) return;
+  if(goal._questSuggested100) return;
+  goal._questSuggested100 = true;
+  const suggestions = [{type:'rpg_quest_add', trackId:'finance', text:'Ünnepeld meg a(z) "'+goal.name+'" cél elérését, és tűzz ki egy újat', xp:20}];
+  const availableSkill = allSkillNodes().find(sk=>skillState(sk)==='available');
+  if(availableSkill) suggestions.push({type:'skill_unlock', skillName:availableSkill.name});
+  App.state.aiChat.push({role:'assistant', content:'🏦 "'+goal.name+'" megtakarítási cél 100%-on! Ezt is érdemes lehet ehhez kapcsolni:', suggestions});
+}
+/* checkDiscretionaryUnderBudget: Ötlet #35 pénzügyi ága, "egyéb kiadás"
+   kategória. A hónap VÉGE felé (az utolsó 5 napban, hogy ne egy még csak
+   félig lezajlott hónapot értékeljünk korainak "sikerként") megnézi, hogy egy
+   kategória jól a kerete alatt maradt-e (spent <= limit*0.6) - ha igen, egy
+   pénzügyi Kaland-küldetést ajánl fel. Ugyanazokból a helyekről hívjuk, ahol a
+   kategória spent mezője ténylegesen nő (saveSpend, saveBankNotification,
+   saveFoodoraOrder) - a mentés PILLANATÁBAN, nem egy külön időzítővel.
+   Duplikáció-védelem: cat._questSuggestedMonths - a már felajánlott hónapok
+   "ÉÉÉÉ-HH" kulcsait tárolja a kategória-tételen (ugyanaz a "csak egyszer"
+   minta, mint a bossNotified/workoutStreakQuestSuggestedDates tömböknél, csak
+   a cél/kategória objektumon tárolva, mert az esemény ahhoz az egy tételhez
+   kötődik - ld. checkSavingsGoalMilestone goal._questSuggested100 mezőjét is). */
+function checkDiscretionaryUnderBudget(cat){
+  if(!App.state.rpg || !App.state.rpg.onboarded) return;
+  if(!cat || !(cat.limit>0)) return;
+  const now = new Date();
+  const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
+  if(now.getDate() < lastDayOfMonth - 5) return;
+  if((cat.spent||0) > cat.limit*0.6) return;
+  const monthKey = now.getFullYear()+'-'+pad(now.getMonth()+1);
+  if(!Array.isArray(cat._questSuggestedMonths)) cat._questSuggestedMonths = [];
+  if(cat._questSuggestedMonths.includes(monthKey)) return;
+  cat._questSuggestedMonths.push(monthKey);
+  App.state.aiChat.push({role:'assistant', content:'💸 "'+cat.name+'" kategóriában ebben a hónapban jól a kereten belül maradtál! Ezt is bevihetjük az Életkampányba:',
+    suggestions:[{type:'rpg_quest_add', trackId:'finance', text:'Tartsd a(z) "'+cat.name+'" keretet jövő hónapban is', xp:15}]});
+}
+/* maybeSuggestCycleAwareWorkout: Ötlet #36 - a műszakciklus (dayTypeFor) és a
+   korábbi edzések energiahatása (App.state.activities, type:'edzes',
+   energyAfter - ld. saveNewWorkout/applyAiSuggestion 's.type===workout' ága,
+   ahol MAI edzésnél egy ilyen bejegyzés is készül ugyanazzal a dátummal) közti
+   összefüggést nézi meg: éjszakai műszak UTÁNI napokon átlagosan alacsonyabb-e
+   a záró energiaszint, mint pihenő/szabi napokon. Ha igen, és a MAI vagy a
+   HOLNAPI nap ilyen típusú, egy tájékoztató MotivAI-üzenetet ad - NEM
+   rpg_quest_add vagy más megerősítendő javaslat-kártyaként, mert ez nem egy
+   már megtörtént dolog naplózása (mint a 'workout' suggestion-típus), hanem
+   egy előretekintő edzés-TIPP, amin nincs mit "jóváhagyni" - ezért suggestions
+   nélküli, sima szöveges assistant-üzenet (ld. a feladatleírás indoklását).
+   Trigger: a Fejlődés nézet (RENDERERS.fejlodes) megnyitásakor fut le - ez a
+   természetes hely, ahol a felhasználó úgyis az edzéseivel/energiájával
+   foglalkozik, és nem igényel új időzítőt/pollert.
+   Duplikáció-védelem: App.state.cycleCoach.lastSuggestedDate - naponta
+   legfeljebb egyszer ajánl fel tippet (a mai dátumra állítva, amint felajánlott
+   egyet - a felhasználó a nézet többszöri megnyitásakor nem kap újra ugyanazt). */
+function maybeSuggestCycleAwareWorkout(){
+  if(!App.state.cycleCoach) App.state.cycleCoach = {lastSuggestedDate:null};
+  const today = todayISO();
+  if(App.state.cycleCoach.lastSuggestedDate === today) return;
+  const energyAfterByDate = {};
+  App.state.activities.forEach(a=>{ if(a.type==='edzes' && a.energyAfter!=null) energyAfterByDate[a.date]=a.energyAfter; });
+  const postNightSamples=[], restDaySamples=[];
+  App.state.workouts.forEach(w=>{
+    if(!w.date || energyAfterByDate[w.date]==null) return;
+    const prevDay = toLocalISO(new Date(new Date(w.date+'T00:00:00').getTime()-86400000));
+    if(dayTypeFor(prevDay)==='ejszaka') postNightSamples.push(energyAfterByDate[w.date]);
+    else if(dayTypeFor(w.date)==='pihen' || dayTypeFor(w.date)==='szabi') restDaySamples.push(energyAfterByDate[w.date]);
+  });
+  if(postNightSamples.length<3 || restDaySamples.length<3) return; // kevés adat még megbízható mintához
+  const avg = arr => arr.reduce((sum,v)=>sum+v,0)/arr.length;
+  const avgPostNight = avg(postNightSamples), avgRestDay = avg(restDaySamples);
+  if(avgRestDay - avgPostNight < 15) return; // nincs egyértelmű, tanulságos különbség
+  const tomorrow = toLocalISO(new Date(Date.now()+86400000));
+  const upcoming = [{iso:today, label:'Ma'}, {iso:tomorrow, label:'Holnap'}];
+  const postNightDay = upcoming.find(u=>dayTypeFor(toLocalISO(new Date(new Date(u.iso+'T00:00:00').getTime()-86400000)))==='ejszaka');
+  const restDay = !postNightDay && upcoming.find(u=>dayTypeFor(u.iso)==='pihen' || dayTypeFor(u.iso)==='szabi');
+  let content = null;
+  if(postNightDay){
+    content = '🌙 '+postNightDay.label+' éjszakai műszak utáni nap — eddigi adataid szerint ilyenkor átlagosan '+Math.round(avgPostNight)+'%-os energiával zártad az edzéseket (pihenőnapon inkább '+Math.round(avgRestDay)+'%-kal). Most egy rövidebb, könnyebb edzés fér bele jobban.';
+  } else if(restDay){
+    content = '💪 '+restDay.label+' pihenő/szabi nap — eddig ilyenkor jellemzően jobb energiával (~'+Math.round(avgRestDay)+'%) zártad az edzéseket, mint műszak után (~'+Math.round(avgPostNight)+'%). Ez egy jó alkalom egy intenzívebb edzésre.';
+  }
+  if(!content) return;
+  App.state.cycleCoach.lastSuggestedDate = today;
+  App.state.aiChat.push({role:'assistant', content});
+  saveState();
+}
 /* applyAiSuggestion: a tényleges állapotmódosítás egy jóváhagyott javaslatra.
    Ezt hívja mind az AI-válaszból, mind a helyi parancsból (handleLocalAiCommand
    -> addLocalAiSuggestions) származó javaslatok elfogadása — lásd az egységes
@@ -4289,6 +4433,7 @@ function saveSpend(id){
   if(v<0){ toast('Az érték nem lehet negatív'); return; }
   x.spent=(x.spent||0)+v;
   const dupWarning = recordSpendAndCheckDup(x.id, v, todayISO(), 'manual');
+  checkDiscretionaryUnderBudget(x); // Ötlet #35 pénzügyi ág - ld. a definíciónál
   saveState(); closeSheet(); toast(dupWarning ? 'Rögzítve ⚠️ '+dupWarning : 'Rögzítve'); RENDERERS.finance();
 }
 
@@ -4430,6 +4575,7 @@ function saveBankNotification(){
   if(!x){ toast('Kategória nem található'); return; }
   x.spent=(x.spent||0)+v;
   const dupWarning = recordSpendAndCheckDup(x.id, v, todayISO(), 'bank');
+  checkDiscretionaryUnderBudget(x); // Ötlet #35 pénzügyi ág - ld. a definíciónál
   saveState(); _finishActiveNotifQueueItem(true); toast(dupWarning ? 'Elmentve ⚠️ '+dupWarning : 'Elmentve'); RENDERERS.finance();
 }
 /* findFoodDiscretionaryCategory: a meglévő "Egyéb kategóriák" (discretionary)
@@ -4469,6 +4615,7 @@ function saveFoodoraOrder(){
   App.state.finance.foodOrders.unshift({id:uid(), amount:v, rawText:ctx.rawText||'', date:todayISO(), appliedToDiscretionaryId:x.id});
   x.spent=(x.spent||0)+v;
   const dupWarning = recordSpendAndCheckDup(x.id, v, todayISO(), 'foodora');
+  checkDiscretionaryUnderBudget(x); // Ötlet #35 pénzügyi ág - ld. a definíciónál
   saveState(); _finishActiveNotifQueueItem(true); toast(dupWarning ? 'Rögzítve ⚠️ '+dupWarning : 'Rögzítve'); RENDERERS.finance();
 }
 
@@ -4526,6 +4673,7 @@ function saveSavingsAdd(id){
   const v=parseFloat(document.getElementById('sv-add').value)||0;
   if(v<0){ toast('Az érték nem lehet negatív'); return; }
   x.saved=(x.saved||0)+v;
+  checkSavingsGoalMilestone(x); // Ötlet #35/#39 - ld. a definíciónál
   saveState(); closeSheet(); toast('Elmentve'); RENDERERS.finance();
 }
 function manageSavingsSheet(id){
