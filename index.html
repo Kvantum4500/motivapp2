@@ -4608,6 +4608,16 @@ function buildExportPayload(){
      tudja, milyen állapotból jött a mentés. */
   return Object.assign({schemaVersion:APP_VERSION, exportedAt:new Date().toISOString()}, App.state);
 }
+/* Visszatérési érték: sikerült-e ténylegesen elindítani a mentést (a natív ágon
+   ez azt jelenti, hogy a window.AndroidBackup.exportJson hívás magát nem dobott
+   kivételt - a tényleges fájlírás onnantól a natív "Mentés másként" dialóguson
+   át aszinkron történik, saját natív Toast-tal). A hívónak (saveToFile()) ez
+   alapján KELL eldöntenie, hogy mutat-e sikert jelző toast-ot: korábban
+   saveToFile() ezt a visszatérési értéket figyelmen kívül hagyva mindig
+   'Exportálva'-t jelzett, ami egy dobott kivétel esetén az itteni hibaüzenetet
+   ugyanabban a szinkron blokkban felülírta (a toast() csak az utolsó hívást
+   mutatja egy blokkon belül) - a felhasználó hamis sikerüzenetet látott,
+   miközben a mentés valójában meg sem történt. */
 function exportData(){
   const payload = buildExportPayload();
   const json = JSON.stringify(payload,null,2);
@@ -4618,12 +4628,13 @@ function exportData(){
      Böngészőben/telepített webes verzióban window.AndroidBackup nincs jelen, ott
      marad a lenti, eddig is működő blob-alapú letöltés. */
   if(typeof window.AndroidBackup!=='undefined' && window.AndroidBackup){
-    try{ window.AndroidBackup.exportJson(json, filename); return; }
-    catch(e){ toast('Hiba az exportálás natív indításakor.'); return; }
+    try{ window.AndroidBackup.exportJson(json, filename); return true; }
+    catch(e){ toast('Hiba az exportálás natív indításakor.'); return false; }
   }
   const blob=new Blob([json],{type:'application/json'});
   const url=URL.createObjectURL(blob), a=document.createElement('a');
   a.href=url; a.download=filename; a.click(); URL.revokeObjectURL(url);
+  return true;
 }
 /* applyImportedJson: a betöltött fájl szövegéből a jelenlegi App.state-et
    építi fel (parse + a defaultState()-re épülő merge + a régi/hiányzó
@@ -4742,13 +4753,14 @@ async function saveToFile(){
       markBackupSaved('Mentve');
     }catch(e){
       if(e && e.name === 'AbortError') return; // a felhasználó bezárta a fájlválasztót — nincs teendő
-      exportData();
-      markBackupSaved('Nem sikerült közvetlenül menteni — letöltés indult helyette');
+      // Csak akkor jelezzünk (a valós helyzethez képest túl derűlátó) fallback-sikert,
+      // ha az exportData() alatti letöltés/natív hívás ténylegesen elindult - különben
+      // ez a toast felülírná (és elrejtené) az exportData() saját hibaüzenetét.
+      if(exportData()) markBackupSaved('Nem sikerült közvetlenül menteni — letöltés indult helyette');
     }
     return;
   }
-  exportData();
-  markBackupSaved('Exportálva');
+  if(exportData()) markBackupSaved('Exportálva');
 }
 function markBackupSaved(msg){
   App.state.lastBackupAt = new Date().toISOString();
