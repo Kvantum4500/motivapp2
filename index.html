@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.15';
+const APP_VERSION = '2.2.16';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.15';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.16';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -4876,6 +4876,45 @@ function syncHealthConnect(){
   try{ window.AndroidHealth.requestPermissions(); }
   catch(e){ toast('Hiba a Health Connect engedélykérés indításakor.'); }
 }
+/* window.AndroidNotifAccess (NotificationAccessBridge.kt): diagnosztikai/teszt híd a
+   banki/Foodora értesítés-figyelőhöz (NotificationForwarderService). Azért kell, mert a
+   natív oldal onListenerConnected()-alapú automatikus "pótold be a már ott ülő
+   értesítéseket" logikája CSAK akkor fut le, amikor az OS ténylegesen (újra)csatlakoztatja
+   a listenert (engedély megadásakor, újraindításnál, app-frissítésnél) - ezt a
+   felhasználó nem tudja közvetlenül kikényszeríteni, és azt sem látja, hogy egyáltalán
+   meg van-e adva az engedély / csatlakoztatva van-e épp a szolgáltatás. Ez a gomb erre ad
+   módot: a jóváhagyás státuszát/beállítását, és a szolgáltatás kézi, azonnali
+   újra-átvizsgálását a jelenleg is aktív (még el nem dobott) értesítésekre. */
+function androidNotifAccessAvailable(){
+  return typeof window!=='undefined' && typeof window.AndroidNotifAccess!=='undefined' && !!window.AndroidNotifAccess;
+}
+function notifAccessGranted(){
+  if(!androidNotifAccessAvailable()) return false;
+  try{ return !!window.AndroidNotifAccess.isAccessGranted(); }
+  catch(e){ return false; }
+}
+function testNotificationAccess(){
+  if(!androidNotifAccessAvailable()){ toast('Ez a funkció csak a natív alkalmazásban érhető el.'); return; }
+  if(!notifAccessGranted()){
+    toast('Nincs megadva az értesítés-hozzáférés — megnyitom a rendszerbeállítást, ott engedélyezd a MotivApp-ot.');
+    try{ window.AndroidNotifAccess.openAccessSettings(); }
+    catch(e){ toast('Hiba a beállítások megnyitásakor.'); }
+    return;
+  }
+  let result;
+  try{ result = JSON.parse(window.AndroidNotifAccess.testScanNow()); }
+  catch(e){ toast('Hiba a teszt-ellenőrzés közben.'); return; }
+  if(!result.listenerConnected){
+    toast('Az értesítés-figyelő szolgáltatás jelenleg nincs csatlakoztatva az Androidhoz — próbáld pár másodperc múlva újra, vagy indítsd újra az appot.');
+  }else if(result.savedCount>0){
+    toast('✓ '+result.savedCount+' feldolgozható banki/Foodora értesítést találtam — mindjárt megjelenik a jóváhagyó lap.');
+  }else if(result.candidatesFound>0){
+    toast('Találtam '+result.candidatesFound+' banki/Foodora értesítést, de egyikben sem ismertem fel forint-összeget.');
+  }else{
+    toast('Nem találtam banki/Foodora értesítést az értesítési sávban jelenleg.');
+  }
+  RENDERERS.integrations();
+}
 /* A natív oldal ezt hívja meg globálisan, a fenti három AndroidHealth-hívás
    eredményeként. Böngészőben ezt soha senki nem hívja meg, de a függvénynek
    attól még biztonságosan léteznie kell (nem szabad kivételt dobnia semmilyen
@@ -4989,6 +5028,10 @@ RENDERERS.integrations = function(){
         <div class="small" style="margin-top:8px;" id="health-status-line">${androidHealthAvailable()? 'Natív alkalmazás észlelve – a gombbal szinkronizálhatod a mai adatokat.' : 'Ez a böngésző/telepített webes verzió — itt csak a kézi napló (Ma nézet, Gyors napló) érhető el, a natív appban automatikus is a szinkron.'}</div>
         <button class="btn btn-ghost btn-sm" style="margin-top:6px;" onclick="syncHealthConnect()">🔄 Szinkronizálás Health Connect-ből</button>
       </div></div><span class="pill ${androidHealthAvailable()?'pill-green':'pill-muted'}">${androidHealthAvailable()?'Elérhető (natív)':'Natív app szükséges'}</span></div>
+      <div class="integ-row"><span class="ic">🏦</span><div><div class="t">Banki / Foodora értesítés-figyelő</div><div class="d">Natív Android szolgáltatás, ami KIZÁRÓLAG a K&amp;H Bank, az UniCredit és a Foodora értesítéseiből olvassa ki a költést (más alkalmazás értesítését soha nem nézi meg) – böngészőből/webes verzióból nem elérhető.
+        <div class="small" style="margin-top:8px;" id="notifaccess-status-line">${androidNotifAccessAvailable() ? (notifAccessGranted()? 'Hozzáférés megadva.' : 'Nincs megadva az értesítés-hozzáférés — a gombbal megnyithatod a beállítást.') : 'Ez a böngésző/telepített webes verzió — ez a funkció csak a natív appban érhető el.'}</div>
+        ${androidNotifAccessAvailable() ? `<button class="btn btn-ghost btn-sm" style="margin-top:6px;" onclick="testNotificationAccess()">🔄 ${notifAccessGranted()?'Teszt: aktív értesítések újraellenőrzése':'Hozzáférés megadása'}</button>` : ''}
+      </div></div><span class="pill ${notifAccessGranted()?'pill-green':androidNotifAccessAvailable()?'pill-blue':'pill-muted'}">${notifAccessGranted()?'Elérhető (natív)':androidNotifAccessAvailable()?'Hozzáférés hiányzik':'Natív app szükséges'}</span></div>
       <div class="integ-row"><span class="ic">📍</span><div><div class="t">Háttér GPS-követés</div><div class="d">${(typeof window.AndroidTracking!=='undefined' && window.AndroidTracking) ? 'Natív alkalmazás – zárolt kijelzőnél vagy háttérbe küldve is folytatódik a rögzítés (értesítés jelzi, amíg fut).' : 'A kijelző ébren tartása AKTÍV túrakövetés közben – amíg az app nyitva és előtérben van – már működik (Wake Lock API). Valódi háttérkövetés kikapcsolt kijelzővel vagy bezárt appal viszont NEM lehetséges böngészőből: ilyenkor a JS futása felfüggesztődik. Ehhez natív Android location foreground service kellene.'}</div></div><span class="pill ${(typeof window.AndroidTracking!=='undefined' && window.AndroidTracking)?'pill-green':'pill-blue'}">${(typeof window.AndroidTracking!=='undefined' && window.AndroidTracking)?'Elérhető (natív)':'Részleges'}</span></div>
       <div class="integ-row"><span class="ic">🔔</span><div><div class="t">Rendszerszintű értesítések</div><div class="d">Böngésző Notification API-alapú emlékeztető már működik a mai feladatokra/eseményekre, de csak amíg ez a lap nyitva van a böngésződben – nem zárolt telefonos push-értesítés. Zárolt telefonon vagy bezárt appnál nem érkezik értesítés; ehhez szerver + Push API + Service Worker + telepített PWA kellene, ami jelenleg nincs.
         <div class="small" style="margin-top:8px;" id="notif-status-line">${notificationsSupported()? notificationStatusText() : 'A böngésződ nem támogatja az értesítéseket.'}</div>

@@ -19,7 +19,10 @@ import android.service.notification.StatusBarNotification
  * notification itself stays sitting in the shade, but this service never gets told
  * about it again). [onListenerConnected] closes that gap: it runs once, right after the
  * OS finishes connecting this listener, and backfills anything already active at that
- * moment through the exact same [onNotificationPosted] path.
+ * moment through [scanActiveNotifications]. That same scan is also exposed on demand via
+ * [instance] + [scanActiveNotifications] for [NotificationAccessBridge]'s manual test
+ * button (Integrációk view) - useful because [onListenerConnected] only fires when the
+ * OS actually (re)connects the listener, which the user has no direct way to force.
  *
  * This allow-list is intentionally compiled-in and there is intentionally no in-app
  * settings UI to change it, ever - see the class-level comment on the manifest
@@ -83,70 +86,99 @@ class NotificationForwarderService : NotificationListenerService() {
             val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString().orEmpty()
             return listOf(title, text, bigText).filter { it.isNotBlank() }.joinToString(" ")
         }
+
+        /** Set only from [onListenerConnected]/[onListenerDisconnected] on this exact
+         * service instance - lets [NotificationAccessBridge] (running inside
+         * MainWebViewActivity, a completely separate component) reach the currently-bound
+         * listener on demand, since Android gives no other way to obtain a live
+         * NotificationListenerService instance from outside the service itself. */
+        @Volatile
+        var instance: NotificationForwarderService? = null
+            private set
     }
 
-    /** Backfills already-active (not yet dismissed) notifications from the allow-listed
-     * packages the moment this listener connects - see the class-level doc for why this
-     * is needed. [getActiveNotifications] can include notifications posted long before
-     * this connection (they were simply sitting in the shade the whole time); that is
-     * intentional here - the user wants historical, still-visible notifications caught
-     * too, not just ones posted from this exact moment forward. Processed oldest-first
-     * (by [StatusBarNotification.getPostTime]) through the normal [onNotificationPosted]
-     * path, so if more than one matching notification is active at once, the LAST one
-     * processed (the most recently posted) is the one that ends up as the stored pending
-     * record - the same "latest wins" behavior a real-time stream of postings would give,
-     * since [PendingNotificationStore] only ever holds one record per type. */
-    override fun onListenerConnected() {
-        super.onListenerConnected()
+    /** (candidatesFound = how many active notifications matched an allow-listed package,
+     * savedCount = how many of those actually carried a recognizable amount and were
+     * saved as a pending record - see [hasAmountMarker]). Exposed so both the automatic
+     * [onListenerConnected] backfill and [NotificationAccessBridge]'s manual test button
+     * can report something meaningful, not just "done". */
+    data class ScanResult(val candidatesFound: Int, val savedCount: Int)
+
+    /** Re-scans whatever is CURRENTLY active (not yet dismissed) in the notification
+     * shade for the 3 allow-listed packages and processes each exactly like a live
+     * [onNotificationPosted] event - see the class-level doc for why this needs to exist
+     * on demand, not just once at connection time. [getActiveNotifications] can include
+     * notifications posted long before this call (they were simply sitting there the
+     * whole time); that is intentional - both the cold-start backfill and the manual test
+     * button are meant to catch historical, still-visible notifications too, not just ones
+     * posted from this exact moment forward. Processed oldest-first (by
+     * [StatusBarNotification.getPostTime]), so if more than one matching notification of
+     * the same kind (bank vs. Foodora) is active at once, the LAST one processed (the most
+     * recently posted) is the one that ends up as the stored pending record - the same
+     * "latest wins" behavior a real-time stream of postings would give, since
+     * [PendingNotificationStore] only ever holds one record per type. */
+    fun scanActiveNotifications(): ScanResult {
+        var candidatesFound = 0
+        var savedCount = 0
         try {
             activeNotifications
                 ?.filter { it.packageName in BANK_PACKAGES || it.packageName == PACKAGE_FOODORA }
                 ?.sortedBy { it.postTime }
-                ?.forEach { sbn -> onNotificationPosted(sbn) }
+                ?.forEach { sbn ->
+                    candidatesFound++
+                    if (processNotification(sbn)) savedCount++
+                }
         } catch (e: SecurityException) {
-            // Some OEM builds can throw here if the connection isn't fully settled yet
-            // despite onListenerConnected() having fired - not fatal, the next genuine
+            // Some OEM builds can throw here if the connection isn't fully settled yet -
+            // not fatal, the caller just sees a lower savedCount than reality; a genuine
             // onNotificationPosted() event still reaches this service normally either way.
         }
+        return ScanResult(candidatesFound, savedCount)
+    }
+
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        instance = this
+        scanActiveNotifications()
+    }
+
+    override fun onListenerDisconnected() {
+        super.onListenerDisconnected()
+        if (instance === this) instance = null
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        val packageName = sbn.packageName ?: return
-
-        when {
-            packageName in BANK_PACKAGES -> handleAllowedNotification(
-                sbn = sbn,
-                packageName = packageName,
-                save = PendingNotificationStore::savePendingBankRecord
-            )
-            packageName == PACKAGE_FOODORA -> handleAllowedNotification(
-                sbn = sbn,
-                packageName = packageName,
-                save = PendingNotificationStore::savePendingFoodRecord
-            )
-            else -> {
-                // Not one of the three allow-listed sources: discard immediately, no
-                // storage/logging/processing of any kind.
-                return
-            }
-        }
+        processNotification(sbn)
     }
 
-    private fun handleAllowedNotification(
-        sbn: StatusBarNotification,
-        packageName: String,
-        save: (context: android.content.Context, amount: Double, rawText: String, sourcePackage: String) -> Unit
-    ) {
+    /** Returns true iff [sbn] was from an allow-listed package AND carried a recognizable
+     * amount, i.e. a pending record was actually saved. Shared by the real-time
+     * [onNotificationPosted] path and the on-demand [scanActiveNotifications] backfill. */
+    private fun processNotification(sbn: StatusBarNotification): Boolean {
+        val packageName = sbn.packageName ?: return false
+
+        val save: (context: android.content.Context, amount: Double, rawText: String, sourcePackage: String) -> Unit =
+            when {
+                packageName in BANK_PACKAGES -> PendingNotificationStore::savePendingBankRecord
+                packageName == PACKAGE_FOODORA -> PendingNotificationStore::savePendingFoodRecord
+                else -> {
+                    // Not one of the three allow-listed sources: discard immediately, no
+                    // storage/logging/processing of any kind.
+                    return false
+                }
+            }
+
         val combinedText = extractTitleAndText(sbn)
 
         // Plaintext keyword/pattern check happens here, before any encryption/storage
         // step. If nothing usable is found, discard - same as an unlisted package.
-        if (!hasAmountMarker(combinedText)) return
+        if (!hasAmountMarker(combinedText)) return false
 
         val amount = extractAmount(combinedText) ?: 0.0
 
         save(applicationContext, amount, combinedText, packageName)
         notifyForegroundApp()
+        return true
     }
 
     private fun notifyForegroundApp() {

@@ -314,6 +314,8 @@ class MainWebViewActivity : ComponentActivity() {
 
         webView.addJavascriptInterface(MapsBridge(this, webView), "AndroidMaps")
 
+        webView.addJavascriptInterface(NotificationAccessBridge(this), "AndroidNotifAccess")
+
         webView.loadUrl(LAUNCH_URL)
         // Any pending record from before the app was running is delivered once the page
         // finishes loading - see the WebViewClient.onPageFinished override above.
