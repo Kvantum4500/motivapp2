@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.11';
+const APP_VERSION = '2.2.12';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.11';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.12';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -846,10 +846,10 @@ const RENDERERS = {};
 /* ================= VIEW: MA (dashboard) ================= */
 RENDERERS.ma = function(){
   const iso = todayISO();
-  const tasksToday = App.state.tasks.filter(t=> !t.due || t.due===iso);
+  const tasksToday = App.state.tasks.filter(t=> !t.due || taskOccursOn(t,iso));
   const doneCount = tasksToday.filter(t=>t.done).length;
   const pct = tasksToday.length ? Math.round(100*doneCount/tasksToday.length) : 0;
-  const eventsToday = App.state.events.filter(e=>e.date===iso).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+  const eventsToday = App.state.events.filter(e=>eventOccursOn(e,iso)).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
   const todayHealth = App.state.healthLog.find(h=>h.date===iso) || {};
   const energyNow = todayEnergyLevel();
   const lastAi = App.state.aiChat.filter(m=>m.role==='assistant').slice(-1)[0];
@@ -1046,6 +1046,7 @@ function openAddTaskSheet(presetDate){
     <div class="sheet-head"><div class="sheet-title">Új feladat</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     <div class="field"><label>Mi a feladat?</label><input type="text" id="nt-title" placeholder="Pl. kampervan zsanér beszerzés"></div>
     <div class="field"><label>Határidő</label><input type="date" id="nt-due" value="${presetDate||todayISO()}"></div>
+    <div class="field"><label>Meddig tart? (opcionális, több napos feladathoz)</label><input type="date" id="nt-due-end"></div>
     <div class="field"><label>Típus</label>
       <div class="chiprow" id="nt-type">
         <div class="chip active" data-v="checkbox">✓ Pipálható</div><div class="chip" data-v="percent">% Százalékos</div><div class="chip" data-v="steps">📋 Lépéssor</div>
@@ -1069,9 +1070,15 @@ function saveNewTask(){
   const title = document.getElementById('nt-title').value.trim();
   if(!title){ toast('Adj meg egy címet'); return; }
   const due = document.getElementById('nt-due').value;
+  const dueEnd = document.getElementById('nt-due-end').value;
+  // Ha van megadva "meddig tart" dátum, annak >= a határidőnek kell lennie - ha nem,
+  // inkább megszakítjuk a mentést egy hibaüzenettel, mint hogy csendben eldobjuk vagy
+  // egynaposként mentsük (a felhasználó explicit tartományt akart megadni).
+  if(dueEnd && dueEnd<due){ toast('A "meddig tart" dátum nem lehet korábbi a határidőnél'); return; }
   const prio = document.querySelector('#nt-prio .chip.active').dataset.v;
   const type = document.querySelector('#nt-type .chip.active').dataset.v;
   const task = {id:uid(),title,due,priority:prio,type,done:false};
+  if(dueEnd) task.dueEnd=dueEnd;
   if(type==='steps') task.steps=[]; else task.progress=0;
   App.state.tasks.push(task);
   saveState();
@@ -1297,7 +1304,7 @@ function dayCell(iso,todayIso,compact){
   const dtKey=dayTypeFor(iso);
   const dt=DAY_TYPES[dtKey]||DAY_TYPES.egyeb;
   const dnum=new Date(iso+'T00:00:00').getDate();
-  const items=[...App.state.events.filter(e=>e.date===iso).map(e=>e.title), ...App.state.tasks.filter(t=>t.due===iso).map(t=>t.title)];
+  const items=[...App.state.events.filter(e=>eventOccursOn(e,iso)).map(e=>e.title), ...App.state.tasks.filter(t=>taskOccursOn(t,iso)).map(t=>t.title)];
   const maxShow = compact?1:2;
   const shown = items.slice(0,maxShow);
   const extra = items.length-shown.length;
@@ -1312,8 +1319,8 @@ function dayCell(iso,todayIso,compact){
 function renderNapView(c){
   const iso = App.ui.calRef;
   const dt = DAY_TYPES[dayTypeFor(iso)]||DAY_TYPES.egyeb;
-  const tasksDay = App.state.tasks.filter(t=>t.due===iso);
-  const eventsDay = App.state.events.filter(e=>e.date===iso).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
+  const tasksDay = App.state.tasks.filter(t=>taskOccursOn(t,iso));
+  const eventsDay = App.state.events.filter(e=>eventOccursOn(e,iso)).sort((a,b)=>(a.time||'').localeCompare(b.time||''));
   c.innerHTML = `
     <div class="flex between center" style="margin-bottom:12px;">
       <button class="iconbtn" onclick="shiftCalRef(-1)">‹</button>
@@ -1378,8 +1385,13 @@ function renderEvView(c){
       ${monthNames.map((mn,mi)=>{
         const daysInM = new Date(year,mi+1,0).getDate();
         const ym = year+'-'+pad(mi+1);
-        const taskCount = App.state.tasks.filter(t=>t.due && t.due.slice(0,7)===ym).length;
-        const evCount = App.state.events.filter(e=>e.date && e.date.slice(0,7)===ym).length;
+        const monthStartIso = ym+'-01';
+        const monthEndIso = ym+'-'+pad(daysInM);
+        // Tartomány-tudatos számlálás: egy több hónapot is átívelő due/dueEnd (vagy
+        // date/endDate) akkor számít bele egy hónapba, ha a tartománya ÁTFEDI azt a
+        // hónapot, nem csak akkor, ha a kezdő dátuma abba a hónapba esik.
+        const taskCount = App.state.tasks.filter(t=>t.due && t.due<=monthEndIso && (t.dueEnd||t.due)>=monthStartIso).length;
+        const evCount = App.state.events.filter(e=>e.date && e.date<=monthEndIso && (e.endDate||e.date)>=monthStartIso).length;
         let strip='';
         for(let d=1;d<=daysInM;d++){
           const dt=DAY_TYPES[dayTypeFor(ym+'-'+pad(d))]||DAY_TYPES.egyeb;
@@ -1407,8 +1419,8 @@ function addPatternDay(){ App.state.schedule.pattern.push('pihen'); saveState();
 function removeLastPatternDay(){ if(App.state.schedule.pattern.length>1){ App.state.schedule.pattern.pop(); saveState(); RENDERERS.schedule(); } }
 
 function openDaySheet(iso){
-  const evs = App.state.events.filter(e=>e.date===iso);
-  const tsk = App.state.tasks.filter(t=>t.due===iso);
+  const evs = App.state.events.filter(e=>eventOccursOn(e,iso));
+  const tsk = App.state.tasks.filter(t=>taskOccursOn(t,iso));
   const curType = dayTypeFor(iso);
   openSheet(`
     <div class="sheet-head"><div class="sheet-title">${fmtDateHu(iso)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
@@ -1465,6 +1477,7 @@ function openAddEventSheet(iso){
     <div class="sheet-head"><div class="sheet-title">Új esemény</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     <div class="field"><label>Megnevezés</label><input type="text" id="ne-title" placeholder="Pl. orvosi vizsgálat"></div>
     <div class="field"><label>Időpont</label><input type="time" id="ne-time"></div>
+    <div class="field"><label>Meddig tart? (opcionális, több napos eseményhez)</label><input type="date" id="ne-date-end"></div>
     <div class="field"><label>Típus</label>
       <div class="chiprow" id="ne-type">
         <div class="chip active" data-v="esemeny">🔵 Esemény</div><div class="chip" data-v="hatarido">🟡 Határidő</div>
@@ -1481,8 +1494,14 @@ function saveNewEvent(iso){
   const title=document.getElementById('ne-title').value.trim();
   if(!title){ toast('Adj meg egy címet'); return; }
   const time=document.getElementById('ne-time').value;
+  const dateEnd=document.getElementById('ne-date-end').value;
+  // Ld. saveNewTask hasonló ellenőrzését: érvénytelen (a kezdő dátumnál korábbi)
+  // záró dátummal inkább megszakítjuk a mentést, mint hogy csendben eldobjuk.
+  if(dateEnd && dateEnd<iso){ toast('A "meddig tart" dátum nem lehet korábbi a dátumnál'); return; }
   const type=document.querySelector('#ne-type .chip.active').dataset.v;
-  App.state.events.push({id:uid(),date:iso,title,time,type});
+  const newEvent={id:uid(),date:iso,title,time,type};
+  if(dateEnd) newEvent.endDate=dateEnd;
+  App.state.events.push(newEvent);
   saveState(); toast('Esemény hozzáadva'); openDaySheet(iso); renderApp();
 }
 function deleteEvent(id){
@@ -2725,12 +2744,12 @@ Ha van konkrét, felvehető javaslatod, a válaszod VÉGÉRE — a szöveges ré
 \`\`\`json
 {"suggestions":[{"type":"finance","name":"Telefon","amount":7480},{"type":"finance","name":"Áram","amount":3303}]}
 \`\`\`
-A type lehet "task" ({"type":"task","title":"..."}) egyszerű teendőhöz, "event" ({"type":"event","title":"...","date":"ÉÉÉÉ-HH-NN","time":"ÓÓ:PP"}) egy konkrét naptári időponthoz kötött eseményhez (NEM egyszerű teendő — akkor használd, ha a felhasználó egy dátumhoz/időponthoz köti a dolgot, pl. "holnap 15:00 fogorvos"), "finance" ({"type":"finance","name":"...","amount":szám}) akkor, ha a felhasználó egy már kifizetett vagy rögzítendő számlaösszeget közöl, "activity_template" ({"type":"activity_template","dayType":"nappal|ejszaka|pihen|szabi|egyeb","activity":{"label":"...","icon":"emoji","durationMin":szám,"physical":1-10,"mental":1-10,"experience":1-10,"energyBefore":0-100,"energyAfter":0-100}}) AKKOR, ha a felhasználó azt kéri, hogy egy aktivitást (pl. a mai naplózott munkát) mentsél el egy adott NAPTÍPUS alap/tipikus mintájaként, és alkalmazd a jövőbeli hasonló napokra is, "activity_log" ({"type":"activity_log","activityType":"edzes|tura|munka|haztartas|gaming|rajzolas|tanulas|projekt|utazas|piheno|szocialis|zene|egyeb","label":"...","durationMin":szám,"physical":1-10,"mental":1-10,"experience":1-10,"energyBefore":0-100,"energyAfter":0-100,"note":"..."}) AKKOR, ha a felhasználó egy EGYSZERI, aznapi tevékenységét (NEM edzést — arra a "workout" van) írja le energiahatással együtt (pl. "2 órát gameingeltem, 80-ról 60-ra esett az energiám") — ez táplálja a jelenlegi energiaszint-becslést és a tanult energia-átlagokat, "income" ({"type":"income","amount":szám}) AKKOR, ha a felhasználó a havi (nettó) fizetését/bevételét szeretné beállítani vagy módosítani, "schedule_pattern" ({"type":"schedule_pattern","startDate":"ÉÉÉÉ-HH-NN","pattern":["nappal"|"ejszaka"|"pihen"|"szabi"|"egyeb", ...]}) AKKOR, ha a felhasználó leírja a teljes ismétlődő műszakrendjét (pl. "3 nap nappalos, 3 nap éjszaka, 3 nap szabad, ismétlődik"), "workout" ({"type":"workout","category":"...","durationMin":szám,"muscleGroups":["mell"|"hat"|"vall"|"kar"|"core"|"lab", ...],"date":"ÉÉÉÉ-HH-NN","notes":"..."}) AKKOR, ha a felhasználó egy elvégzett edzést szeretne naplózni (muscleGroups és notes elhagyható, ha nem egyértelmű; date hiányában a mai nap) — EDZÉS UTÁN, ha a felhasználó NEM említi külön az energiaszint-hatást, a rendszer automatikusan rákérdez egy külön üzenetben, ezt NEKED NEM KELL megtenned, "weight" ({"type":"weight","kg":szám,"date":"ÉÉÉÉ-HH-NN"}) AKKOR, ha a felhasználó egy mért testsúlyt közöl (date hiányában a mai nap), "health_log" ({"type":"health_log","sleepH":szám,"steps":szám,"pulse":szám,"date":"ÉÉÉÉ-HH-NN"}) AKKOR, ha a felhasználó alvásidőt, lépésszámot vagy pulzust közöl kézzel (csak a ténylegesen említett mezőket add meg, a többit hagyd ki), "discretionary_spend" ({"type":"discretionary_spend","name":"...","amount":szám}) AKKOR, ha a felhasználó egy MÁR MEGLÉVŐ, a kontextusban látható egyéb (nem kötelező) kiadási keret terhére költött (a name-hez a pontosan meglévő kategórianevet használd), "savings_add" ({"type":"savings_add","name":"...","amount":szám}) AKKOR, ha a felhasználó egy MÁR MEGLÉVŐ, a kontextusban látható megtakarítási célra tett félretett összeget közöl, "journal" ({"type":"journal","mood":1-5,"text":"..."}) AKKOR, ha a felhasználó egy naplóbejegyzést/hangulatot szeretne rögzíteni (mood 1=nagyon rossz, 5=nagyon jó, elhagyható, ha nem egyértelmű), "skill_unlock" ({"type":"skill_unlock","skillName":"..."}) AKKOR, ha a felhasználó kifejezetten állítja, hogy elért/feloldott egy, a kontextusban "elérhető" (még nem feloldott, de a szülője már feloldva) skillt — a skillName-hez a LEHETŐ LEGPONTOSABBAN a meglévő skill nevét írd, "rpg_quest_add" ({"type":"rpg_quest_add","trackId":"freedom|finance|mental|physical|massage|video|camper|coding|relationship","text":"...","xp":10|20|35}) AKKOR, ha a felhasználó az Életkampányhoz (Kaland) szeretne egy küldetést felvenni az AKTUÁLIS ciklusra (a trackId-t a kontextusban kapott 9 terület közül válaszd a legjobban illő alapján, xp nehézség szerint: könnyű 10, közepes 20, nehéz 35), "rpg_quest_complete" ({"type":"rpg_quest_complete","text":"...","trackId":"... (opcionális, csak ha egyértelmű)"}) AKKOR, ha a felhasználó egy MÁR FELVETT, a kontextusban látható Kaland-küldetést jelent késznek — a text mezőbe a LEHETŐ LEGPONTOSABBAN a meglévő küldetés szövegét írd, hogy egyértelműen beazonosítható legyen, "start_journey" ({"type":"start_journey"}) AKKOR, ha a felhasználó egy túra/kirándulás GPS-követésének elindítását kéri (csak akkor javasold, ha a kontextus szerint épp NINCS folyamatban túrakövetés), vagy "stop_journey" ({"type":"stop_journey"}) AKKOR, ha egy FOLYAMATBAN LÉVŐ túra leállítását/mentését kéri (csak akkor javasold, ha a kontextus szerint épp FUT a túrakövetés). A pattern tömb egy TELJES ciklust írjon le, elemenként egy nap, a megadott sorrendben, a startDate-től kezdve, a startDate a felhasználó által megadott ELSŐ nap valódi ÉÉÉÉ-HH-NN dátuma (a lenti kontextusban kapott mai valódi dátumhoz viszonyítva számold ki az évet). FONTOS SZÓHASZNÁLAT: "szabadnap"/"szabad nap"/"pihenő" = pihen típus (NEM szabi!). "szabi"/"szabadság" típust csak akkor használj, ha a felhasználó kifejezetten tervezett szabadságot/PTO-t említ, nem simán pihenőnapot egy műszakciklusban. A dayType és a pattern elemei PONTOSAN ez az öt kulcs egyike lehet: nappal, ejszaka, pihen, szabi, egyeb. Az activity mezőket a kontextusban kapott, már rögzített aktivitás valós adataiból töltsd ki, ne találj ki újakat, ha a felhasználó egy meglévőre hivatkozik. ÁLTALÁNOS ELV: ha egy bejelentett esemény TÖBB területet is érint (pl. egy edzés az energiaszintet is), és a felhasználó ezt a MÁSIK hatást is konkrétan megadta ugyanabban az üzenetben, mindkettőhöz adj külön suggestions elemet — ne hagyd figyelmen kívül a mellékhatást csak azért, mert a fő téma más. HA A FELHASZNÁLÓ TÖBB TÉTELT SOROL FEL EGYSZERRE (pl. több számlát), MINDEGYIKHEZ ADJ KÜLÖN elemet a suggestions tömbben — soha ne vond össze egyetlen feladattá. Ha nincs konkrét javaslatod, hagyd ki teljesen a JSON blokkot.`;
+A type lehet "task" ({"type":"task","title":"...","dueEnd":"ÉÉÉÉ-HH-NN" (opcionális, csak több napos feladathoz)}) egyszerű teendőhöz, "event" ({"type":"event","title":"...","date":"ÉÉÉÉ-HH-NN","time":"ÓÓ:PP","endDate":"ÉÉÉÉ-HH-NN" (opcionális, csak több napos eseményhez)}) egy konkrét naptári időponthoz kötött eseményhez (NEM egyszerű teendő — akkor használd, ha a felhasználó egy dátumhoz/időponthoz köti a dolgot, pl. "holnap 15:00 fogorvos"), "finance" ({"type":"finance","name":"...","amount":szám}) akkor, ha a felhasználó egy már kifizetett vagy rögzítendő számlaösszeget közöl, "activity_template" ({"type":"activity_template","dayType":"nappal|ejszaka|pihen|szabi|egyeb","activity":{"label":"...","icon":"emoji","durationMin":szám,"physical":1-10,"mental":1-10,"experience":1-10,"energyBefore":0-100,"energyAfter":0-100}}) AKKOR, ha a felhasználó azt kéri, hogy egy aktivitást (pl. a mai naplózott munkát) mentsél el egy adott NAPTÍPUS alap/tipikus mintájaként, és alkalmazd a jövőbeli hasonló napokra is, "activity_log" ({"type":"activity_log","activityType":"edzes|tura|munka|haztartas|gaming|rajzolas|tanulas|projekt|utazas|piheno|szocialis|zene|egyeb","label":"...","durationMin":szám,"physical":1-10,"mental":1-10,"experience":1-10,"energyBefore":0-100,"energyAfter":0-100,"note":"..."}) AKKOR, ha a felhasználó egy EGYSZERI, aznapi tevékenységét (NEM edzést — arra a "workout" van) írja le energiahatással együtt (pl. "2 órát gameingeltem, 80-ról 60-ra esett az energiám") — ez táplálja a jelenlegi energiaszint-becslést és a tanult energia-átlagokat, "income" ({"type":"income","amount":szám}) AKKOR, ha a felhasználó a havi (nettó) fizetését/bevételét szeretné beállítani vagy módosítani, "schedule_pattern" ({"type":"schedule_pattern","startDate":"ÉÉÉÉ-HH-NN","pattern":["nappal"|"ejszaka"|"pihen"|"szabi"|"egyeb", ...]}) AKKOR, ha a felhasználó leírja a teljes ismétlődő műszakrendjét (pl. "3 nap nappalos, 3 nap éjszaka, 3 nap szabad, ismétlődik"), "workout" ({"type":"workout","category":"...","durationMin":szám,"muscleGroups":["mell"|"hat"|"vall"|"kar"|"core"|"lab", ...],"date":"ÉÉÉÉ-HH-NN","notes":"..."}) AKKOR, ha a felhasználó egy elvégzett edzést szeretne naplózni (muscleGroups és notes elhagyható, ha nem egyértelmű; date hiányában a mai nap) — EDZÉS UTÁN, ha a felhasználó NEM említi külön az energiaszint-hatást, a rendszer automatikusan rákérdez egy külön üzenetben, ezt NEKED NEM KELL megtenned, "weight" ({"type":"weight","kg":szám,"date":"ÉÉÉÉ-HH-NN"}) AKKOR, ha a felhasználó egy mért testsúlyt közöl (date hiányában a mai nap), "health_log" ({"type":"health_log","sleepH":szám,"steps":szám,"pulse":szám,"date":"ÉÉÉÉ-HH-NN"}) AKKOR, ha a felhasználó alvásidőt, lépésszámot vagy pulzust közöl kézzel (csak a ténylegesen említett mezőket add meg, a többit hagyd ki), "discretionary_spend" ({"type":"discretionary_spend","name":"...","amount":szám}) AKKOR, ha a felhasználó egy MÁR MEGLÉVŐ, a kontextusban látható egyéb (nem kötelező) kiadási keret terhére költött (a name-hez a pontosan meglévő kategórianevet használd), "savings_add" ({"type":"savings_add","name":"...","amount":szám}) AKKOR, ha a felhasználó egy MÁR MEGLÉVŐ, a kontextusban látható megtakarítási célra tett félretett összeget közöl, "journal" ({"type":"journal","mood":1-5,"text":"..."}) AKKOR, ha a felhasználó egy naplóbejegyzést/hangulatot szeretne rögzíteni (mood 1=nagyon rossz, 5=nagyon jó, elhagyható, ha nem egyértelmű), "skill_unlock" ({"type":"skill_unlock","skillName":"..."}) AKKOR, ha a felhasználó kifejezetten állítja, hogy elért/feloldott egy, a kontextusban "elérhető" (még nem feloldott, de a szülője már feloldva) skillt — a skillName-hez a LEHETŐ LEGPONTOSABBAN a meglévő skill nevét írd, "rpg_quest_add" ({"type":"rpg_quest_add","trackId":"freedom|finance|mental|physical|massage|video|camper|coding|relationship","text":"...","xp":10|20|35}) AKKOR, ha a felhasználó az Életkampányhoz (Kaland) szeretne egy küldetést felvenni az AKTUÁLIS ciklusra (a trackId-t a kontextusban kapott 9 terület közül válaszd a legjobban illő alapján, xp nehézség szerint: könnyű 10, közepes 20, nehéz 35), "rpg_quest_complete" ({"type":"rpg_quest_complete","text":"...","trackId":"... (opcionális, csak ha egyértelmű)"}) AKKOR, ha a felhasználó egy MÁR FELVETT, a kontextusban látható Kaland-küldetést jelent késznek — a text mezőbe a LEHETŐ LEGPONTOSABBAN a meglévő küldetés szövegét írd, hogy egyértelműen beazonosítható legyen, "start_journey" ({"type":"start_journey"}) AKKOR, ha a felhasználó egy túra/kirándulás GPS-követésének elindítását kéri (csak akkor javasold, ha a kontextus szerint épp NINCS folyamatban túrakövetés), vagy "stop_journey" ({"type":"stop_journey"}) AKKOR, ha egy FOLYAMATBAN LÉVŐ túra leállítását/mentését kéri (csak akkor javasold, ha a kontextus szerint épp FUT a túrakövetés). A pattern tömb egy TELJES ciklust írjon le, elemenként egy nap, a megadott sorrendben, a startDate-től kezdve, a startDate a felhasználó által megadott ELSŐ nap valódi ÉÉÉÉ-HH-NN dátuma (a lenti kontextusban kapott mai valódi dátumhoz viszonyítva számold ki az évet). FONTOS SZÓHASZNÁLAT: "szabadnap"/"szabad nap"/"pihenő" = pihen típus (NEM szabi!). "szabi"/"szabadság" típust csak akkor használj, ha a felhasználó kifejezetten tervezett szabadságot/PTO-t említ, nem simán pihenőnapot egy műszakciklusban. A dayType és a pattern elemei PONTOSAN ez az öt kulcs egyike lehet: nappal, ejszaka, pihen, szabi, egyeb. Az activity mezőket a kontextusban kapott, már rögzített aktivitás valós adataiból töltsd ki, ne találj ki újakat, ha a felhasználó egy meglévőre hivatkozik. ÁLTALÁNOS ELV: ha egy bejelentett esemény TÖBB területet is érint (pl. egy edzés az energiaszintet is), és a felhasználó ezt a MÁSIK hatást is konkrétan megadta ugyanabban az üzenetben, mindkettőhöz adj külön suggestions elemet — ne hagyd figyelmen kívül a mellékhatást csak azért, mert a fő téma más. HA A FELHASZNÁLÓ TÖBB TÉTELT SOROL FEL EGYSZERRE (pl. több számlát), MINDEGYIKHEZ ADJ KÜLÖN elemet a suggestions tömbben — soha ne vond össze egyetlen feladattá. Ha nincs konkrét javaslatod, hagyd ki teljesen a JSON blokkot.`;
 
 function buildAiContext(){
   const iso = todayISO();
   const dt = (DAY_TYPES[dayTypeFor(iso)]||{}).label||'ismeretlen';
-  const tasksToday = App.state.tasks.filter(t=>!t.due||t.due===iso);
+  const tasksToday = App.state.tasks.filter(t=>!t.due||taskOccursOn(t,iso));
   const recentW = App.state.workouts.slice(-5).map(w=>w.date+': '+w.category+' ('+(w.muscleGroups||[]).join(',')+')').join('; ')||'nincs rögzítve';
   const lastW = App.state.weightLog.slice(-1)[0];
   const unlocked = Object.keys(App.state.skills).filter(k=>App.state.skills[k]).map(k=>(allSkillNodes().find(s=>s.id===k)||{}).name).join(', ')||'még egy sem';
@@ -3040,6 +3059,22 @@ function parseDateRangeHU(normSeg){
   if(!dates.length || dates.length>MAX_DATE_RANGE_DAYS) return null;
   return {dates, fromNum:fromDay, toNum:toDay};
 }
+// taskOccursOn: igaz, ha a feladat határideje (due/dueEnd tartomány) érinti az adott
+// napot. Szándékosan HAMIS, ha a feladatnak egyáltalán nincs határideje (!t.due) - a
+// "nincs határidő -> minden nap látszik" viselkedés a HÍVÓ oldalon marad explicit
+// `!t.due || taskOccursOn(t,iso)` formában, mindenhol ahol eddig is megvolt (pl. a MA
+// nézet és az AI-kontextus) - a naptár-rácsban (dayCell/openDaySheet/renderNapView)
+// viszont egy határidő nélküli feladat változatlanul NEM jelenik meg, ez a jelenlegi
+// (nem módosítandó) viselkedés.
+function taskOccursOn(t, iso){
+  if(!t.due) return false;
+  const end = t.dueEnd || t.due;
+  return iso >= t.due && iso <= end;
+}
+function eventOccursOn(e, iso){
+  const end = e.endDate || e.date;
+  return iso >= e.date && iso <= end;
+}
 /* parseLocalTaskEventCommand: EGY szövegből TÖBB feladat/esemény-jelöltet is
    kigyűjt (lásd handleLocalAiCommand). A finance-ág mondatokra-bontós mintáját
    követi: a szöveget mondatokra/tagmondatokra bontjuk ('.', '!', '?' mentén), és
@@ -3171,20 +3206,17 @@ function parseLocalTaskEventCommand(text){
       .replace(/\s+/g,' ').trim();
     if(!title) return; // cím nélkül nem hozunk létre javaslatot
     if(dateRange){
-      // Több napot átívelő megbízás/esemény: mivel sem a feladat, sem az esemény
-      // adatmodellje nem támogat dátumTARTOMÁNYt (mindkettő egyetlen "due"/"date"
-      // mezőt tárol - lásd saveNewTask/saveNewEvent), a leghűbb leképezés egy önálló,
-      // egyenként jóváhagyható javaslat-kártya minden egyes érintett napra, azonos
-      // címmel - ez a naptárban is helyesen, minden napon megjelenik, és bármelyik nap
-      // egyedileg is pipálható/törölhető.
-      dateRange.dates.forEach(d=>{
-        if(mode==='event'){
-          const eventType=normSeg.includes('edzes')?'edzes':'esemeny';
-          results.push({type:'event',title,date:d,time,eventType});
-        }else{
-          results.push({type:'task',title,due:d});
-        }
-      });
+      // Több napot átívelő megbízás/esemény: a feladat/esemény adatmodellje mostantól
+      // valódi dátumTARTOMÁNYt támogat (due/dueEnd, ill. date/endDate - lásd
+      // taskOccursOn/eventOccursOn), így egyetlen javaslat-kártya jön létre a tartomány
+      // első és utolsó napjával, nem pedig egy-egy kártya minden érintett napra.
+      const start=dateRange.dates[0], end=dateRange.dates[dateRange.dates.length-1];
+      if(mode==='event'){
+        const eventType=normSeg.includes('edzes')?'edzes':'esemeny';
+        results.push({type:'event',title,date:start,endDate:end,time,eventType});
+      }else{
+        results.push({type:'task',title,due:start,dueEnd:end});
+      }
     }else{
       const date=ownDate||inheritedDate||'';
       if(mode==='event'){
@@ -3401,10 +3433,12 @@ function renderAiChat(){
             <label class="small muted" style="display:block;margin-top:6px;">Zsír (g)<input id="ai-sugg-fat-${i}-${si}" type="number" value="${Number(s.fat)||0}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='task'? `<div class="small muted" style="margin-top:2px;">Helyben felismert feladat — jóváhagyás előtt módosítható</div>
             <label class="small muted" style="display:block;margin-top:6px;">Cím<input id="ai-sugg-title-${i}-${si}" type="text" value="${escapeHtml(s.title||'')}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Határidő<input id="ai-sugg-date-${i}-${si}" type="date" value="${s.due||''}" style="width:100%;margin-top:2px;"></label>` : ''}
+            <label class="small muted" style="display:block;margin-top:6px;">Határidő<input id="ai-sugg-date-${i}-${si}" type="date" value="${s.due||''}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Meddig tart? (opcionális)<input id="ai-sugg-dueend-${i}-${si}" type="date" value="${s.dueEnd||''}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='event'? `<div class="small muted" style="margin-top:2px;">Helyben felismert esemény — jóváhagyás előtt módosítható</div>
             <label class="small muted" style="display:block;margin-top:6px;">Cím<input id="ai-sugg-title-${i}-${si}" type="text" value="${escapeHtml(s.title||'')}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${s.date||''}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Meddig tart? (opcionális)<input id="ai-sugg-enddate-${i}-${si}" type="date" value="${s.endDate||''}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Időpont<input id="ai-sugg-time-${i}-${si}" type="time" value="${s.time||''}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='workout'? `<label class="small muted" style="display:block;margin-top:6px;">Típus<input id="ai-sugg-cat-${i}-${si}" type="text" value="${escapeHtml(s.category||'Edzés')}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${s.date||todayISO()}" style="width:100%;margin-top:2px;"></label>
@@ -3554,14 +3588,18 @@ function applyAiSuggestion(s){
     // Ugyanaz a mezőkészlet, mint a manuális "Új feladat" sheet (saveNewTask) —
     // due lehet üres string is, ha a szövegből nem volt egyértelmű dátum
     // (lásd parseLocalTaskEventCommand), a felhasználó a naptárban utólag beállíthatja.
-    App.state.tasks.push({id:uid(),title:s.title,due:s.due||'',priority:'med',type:'checkbox',done:false,progress:0});
+    const newTask={id:uid(),title:s.title,due:s.due||'',priority:'med',type:'checkbox',done:false,progress:0};
+    if(s.dueEnd) newTask.dueEnd=s.dueEnd; // több napos feladat - lásd taskOccursOn
+    App.state.tasks.push(newTask);
     return '📋 '+(s.title||'Feladat')+' hozzáadva'+(s.due?' ('+fmtDateHu(s.due)+')':'')+' ✓';
   }
   if(s.type==='event'){
     // Ugyanaz a mezőkészlet, mint a manuális "Új esemény" sheet (saveNewEvent, lásd
     // App.state.events.push) — date lehet üres, ha a szövegből nem volt egyértelmű
     // dátum, ekkor a mai napra kerül (a naptárban utólag áthelyezhető).
-    App.state.events.push({id:uid(),date:s.date||todayISO(),title:s.title,time:s.time||'',type:s.eventType||'esemeny'});
+    const newEvent={id:uid(),date:s.date||todayISO(),title:s.title,time:s.time||'',type:s.eventType||'esemeny'};
+    if(s.endDate) newEvent.endDate=s.endDate; // több napos esemény - lásd eventOccursOn
+    App.state.events.push(newEvent);
     return '🗓️ '+(s.title||'Esemény')+' hozzáadva'+(s.date?' ('+fmtDateHu(s.date)+(s.time?', '+s.time:'')+')':'')+' ✓';
   }
   if(s.type==='workout'){
@@ -3706,14 +3744,18 @@ function acceptAiSuggestion(mi,si){
   } else if(s.type==='task'){
     const titleEl=document.getElementById('ai-sugg-title-'+mi+'-'+si);
     const dueEl=document.getElementById('ai-sugg-date-'+mi+'-'+si);
+    const dueEndEl=document.getElementById('ai-sugg-dueend-'+mi+'-'+si);
     if(titleEl && titleEl.value.trim()) s.title=titleEl.value.trim();
     if(dueEl) s.due=dueEl.value||'';
+    if(dueEndEl) s.dueEnd=dueEndEl.value||'';
   } else if(s.type==='event'){
     const titleEl=document.getElementById('ai-sugg-title-'+mi+'-'+si);
     const dateEl=document.getElementById('ai-sugg-date-'+mi+'-'+si);
+    const endDateEl=document.getElementById('ai-sugg-enddate-'+mi+'-'+si);
     const timeEl=document.getElementById('ai-sugg-time-'+mi+'-'+si);
     if(titleEl && titleEl.value.trim()) s.title=titleEl.value.trim();
     if(dateEl) s.date=dateEl.value||'';
+    if(endDateEl) s.endDate=endDateEl.value||'';
     if(timeEl) s.time=timeEl.value||'';
   } else if(s.type==='workout'){
     const catEl=document.getElementById('ai-sugg-cat-'+mi+'-'+si);
@@ -6376,6 +6418,30 @@ async function runRegressionChecks(){
     rec('6) todayISO helyi dátum + toISOString guard', pass1 && pass2, 'todayISO() -> '+t+' (elvárt '+expected+'); guard: '+guardDetail);
   }catch(e){
     rec('6) todayISO helyi dátum + toISOString guard', false, 'Hiba a teszt közben: '+(e&&e.message?e.message:e));
+  }
+
+  // ---- 7) taskOccursOn: due/dueEnd tartomány pontosan a tartományon belüli napokra igaz ----
+  try{
+    const t={id:'x',title:'teszt',due:'2026-03-10',dueEnd:'2026-03-12'};
+    const inRange = ['2026-03-10','2026-03-11','2026-03-12'].every(d=>taskOccursOn(t,d));
+    const outRange = !taskOccursOn(t,'2026-03-09') && !taskOccursOn(t,'2026-03-13');
+    const pass = inRange && outRange;
+    rec('7) taskOccursOn tartomány-illesztés (due 03-10 .. dueEnd 03-12)', pass,
+      'tartományon belül (03-10,03-11,03-12): '+inRange+'; tartományon kívül (03-09,03-13): '+outRange);
+  }catch(e){
+    rec('7) taskOccursOn tartomány-illesztés (due 03-10 .. dueEnd 03-12)', false, 'Hiba a teszt közben: '+(e&&e.message?e.message:e));
+  }
+
+  // ---- 8) eventOccursOn: date/endDate tartomány pontosan a tartományon belüli napokra igaz ----
+  try{
+    const ev={id:'y',title:'teszt',date:'2026-03-10',endDate:'2026-03-12'};
+    const inRange = ['2026-03-10','2026-03-11','2026-03-12'].every(d=>eventOccursOn(ev,d));
+    const outRange = !eventOccursOn(ev,'2026-03-09') && !eventOccursOn(ev,'2026-03-13');
+    const pass = inRange && outRange;
+    rec('8) eventOccursOn tartomány-illesztés (date 03-10 .. endDate 03-12)', pass,
+      'tartományon belül (03-10,03-11,03-12): '+inRange+'; tartományon kívül (03-09,03-13): '+outRange);
+  }catch(e){
+    rec('8) eventOccursOn tartomány-illesztés (date 03-10 .. endDate 03-12)', false, 'Hiba a teszt közben: '+(e&&e.message?e.message:e));
   }
 
   const failCount=results.filter(r=>r['Eredmény']==='FAIL').length;
