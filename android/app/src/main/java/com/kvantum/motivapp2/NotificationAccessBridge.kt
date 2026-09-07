@@ -51,21 +51,37 @@ class NotificationAccessBridge(private val activity: ComponentActivity) {
      * "candidatesFound":szám,"savedCount":szám}. Ha a listener épp nincs csatlakoztatva
      * (pl. az engedély megvan, de az OS még nem kötötte be újra a szolgáltatást), csak
      * listenerConnected:false jön vissza - ilyenkor a webes oldal javasolhatja az app
-     * újraindítását vagy egy pillanatnyi várakozást. */
+     * újraindítását vagy egy pillanatnyi várakozást.
+     *
+     * A teljes törzs try/catch-ben fut: [NotificationForwarderService.scanActiveNotifications]
+     * a [PendingNotificationStore]-on keresztül a titkosított tárolót is írhatja, ami
+     * elméletileg (pl. Keystore-probléma esetén) más kivételt is dobhat, mint a már ott
+     * kezelt SecurityException-t - mivel ez a függvény mostantól a felhasználó egy
+     * gombnyomásával BÁRMIKOR, közvetlenül kiváltható (nem csak a ritka
+     * onListenerConnected() eseménynél), egy itt elszabaduló kivétel nem omolhat át a
+     * JS-hídon: inkább egy "nincs csatlakoztatva" jellegű, biztonságosan kezelt
+     * eredményt adunk vissza, amit a webes oldal újrapróbálásra ösztönző üzenetként
+     * jelenít meg. */
     @JavascriptInterface
     fun testScanNow(): String {
-        val service = NotificationForwarderService.instance
         val result = JSONObject()
-        if (service == null) {
+        try {
+            val service = NotificationForwarderService.instance
+            if (service == null) {
+                result.put("listenerConnected", false)
+                result.put("candidatesFound", 0)
+                result.put("savedCount", 0)
+                return result.toString()
+            }
+            val scan = service.scanActiveNotifications()
+            result.put("listenerConnected", true)
+            result.put("candidatesFound", scan.candidatesFound)
+            result.put("savedCount", scan.savedCount)
+        } catch (e: Exception) {
             result.put("listenerConnected", false)
             result.put("candidatesFound", 0)
             result.put("savedCount", 0)
-            return result.toString()
         }
-        val scan = service.scanActiveNotifications()
-        result.put("listenerConnected", true)
-        result.put("candidatesFound", scan.candidatesFound)
-        result.put("savedCount", scan.savedCount)
         return result.toString()
     }
 }
