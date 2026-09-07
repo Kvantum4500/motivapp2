@@ -4223,11 +4223,30 @@ function manageDiscretionarySheet(id){
   const idx=App.state.finance.discretionary.findIndex(i=>i.id===id);
   const len=App.state.finance.discretionary.length;
   openSheet(`<div class="sheet-head"><div class="sheet-title">${escapeHtml(x.name)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
-    <div class="flex gap8" style="margin-top:4px;">
+    <div class="field"><label>Eddig elköltött összeg (Ft)</label><input type="number" id="dc-edit-spent" min="0" value="${x.spent||0}" style="font-size:20px;text-align:center;padding:16px;"></div>
+    <button class="btn btn-primary btn-block" onclick="saveDiscretionarySpentAmount('${id}')">Mentés</button>
+    <div class="hr"></div>
+    <div class="flex gap8" style="margin-top:10px;">
       <button class="btn btn-ghost btn-sm" style="flex:1;${idx===0?'opacity:0.35;cursor:not-allowed;':''}" ${idx===0?'disabled':''} onclick="moveFinanceItem('discretionary','${id}',-1);closeSheet();">⬆️ Feljebb</button>
       <button class="btn btn-ghost btn-sm" style="flex:1;${idx===len-1?'opacity:0.35;cursor:not-allowed;':''}" ${idx===len-1?'disabled':''} onclick="moveFinanceItem('discretionary','${id}',1);closeSheet();">⬇️ Lejjebb</button>
     </div>
     <button class="btn btn-danger btn-sm btn-block" style="margin-top:8px;" onclick="removeFinanceItem('discretionary','${id}');closeSheet();">🗑️ Törlés</button>`);
+}
+/* saveDiscretionarySpentAmount: az "Egyéb kategóriák" (discretionary) elköltött
+   összege eddig csak NÖVELHETŐ volt (logSpendSheet()/saveSpend(), illetve a banki/
+   Foodora értesítés-lapok) - egyszer rögzítve semmilyen módon nem volt
+   csökkenthető/nullázható, sem kézzel, sem a MotivAI chaten át (a helyi parser nem
+   ismeri fel az ilyen "nullázd le" jellegű kéréseket, az AI-chat pedig csak ÚJ
+   költést tud felvenni, meglévőt nem tud módosítani). Ez a kötelező tételeknél már
+   meglévő editMandatorySheet()/saveMandatoryAmount() mintáját követi: közvetlenül
+   beállítja (nem hozzáadja) az elköltött összeget, tetszőleges értékre, 0-t is
+   beleértve. */
+function saveDiscretionarySpentAmount(id){
+  const x=App.state.finance.discretionary.find(i=>i.id===id); if(!x) return;
+  const v=parseFloat(document.getElementById('dc-edit-spent').value)||0;
+  if(v<0){ toast('Az érték nem lehet negatív'); return; }
+  x.spent=v;
+  saveState(); closeSheet(); toast('Mentve'); RENDERERS.finance();
 }
 function addSavingsSheet(){
   openSheet(`<div class="sheet-head"><div class="sheet-title">Új megtakarítási cél</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
