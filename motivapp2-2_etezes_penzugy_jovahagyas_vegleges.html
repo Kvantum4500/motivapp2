@@ -131,7 +131,7 @@ a{color:inherit;}
 .dot-blue{background:var(--trail-blue);}.dot-red{background:var(--trail-red);}.dot-yellow{background:var(--trail-yellow);}.dot-green{background:var(--trail-green);}.dot-white{background:var(--trail-white);}
 
 /* ===== SUBTABS ===== */
-.subtabs{display:flex;gap:6px;margin-bottom:16px;overflow-x:auto;padding-bottom:2px;}
+.subtabs{display:flex;gap:6px;margin-bottom:16px;overflow-x:auto;padding-bottom:2px;-webkit-mask-image:linear-gradient(to right, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);mask-image:linear-gradient(to right, transparent 0, black 16px, black calc(100% - 16px), transparent 100%);}
 .subtab{flex-shrink:0;padding:8px 14px;border-radius:999px;background:var(--surface);border:1px solid var(--line);color:var(--muted);font-size:13px;font-weight:600;cursor:pointer;}
 .subtab.active{background:var(--paper);color:var(--ink);border-color:var(--paper);}
 
@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.14';
+const APP_VERSION = '2.2.15';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.14';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.15';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -3893,12 +3893,22 @@ RENDERERS.tovabb = function(){
     </div>`;
 };
 
+App.ui.financeTab = App.ui.financeTab || 'attekintes';
+function financeTopToggleHtml(){
+  return `<div class="subtabs">
+      <div class="subtab ${App.ui.financeTab==='attekintes'?'active':''}" role="button" tabindex="0" onclick="setFinanceTab('attekintes')" onkeydown="kbActivate(event,()=>setFinanceTab('attekintes'))">🔎 ÁTTEKINTÉS</div>
+      <div class="subtab ${App.ui.financeTab==='kiadasok'?'active':''}" role="button" tabindex="0" onclick="setFinanceTab('kiadasok')" onkeydown="kbActivate(event,()=>setFinanceTab('kiadasok'))">💳 KIADÁSOK</div>
+      <div class="subtab ${App.ui.financeTab==='megtakaritas'?'active':''}" role="button" tabindex="0" onclick="setFinanceTab('megtakaritas')" onkeydown="kbActivate(event,()=>setFinanceTab('megtakaritas'))">🏦 MEGTAKARÍTÁS</div>
+    </div>`;
+}
+function setFinanceTab(v){ App.ui.financeTab=v; RENDERERS.finance(); }
 RENDERERS.finance = function(){
   const f = App.state.finance;
   const mandTotal = f.mandatory.reduce((s,x)=>s+(x.amount||0),0);
   const discSpent = f.discretionary.reduce((s,x)=>s+(x.spent||0),0);
   const remaining = (f.monthlyIncome||0)-mandTotal-discSpent;
-  document.getElementById('view-finance').innerHTML = subHeader('Pénzügyek') + `
+
+  const attekintesHtml = `
     <div class="card">
       <div class="flex between center" style="margin-bottom:6px;">
         <div class="card-title">Havi áttekintés</div>
@@ -3912,6 +3922,11 @@ RENDERERS.finance = function(){
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small" style="font-weight:700;"><span class="dot dot-green"></span>Maradék</span><span class="mono small" style="font-weight:700;color:${remaining>=0?'var(--trail-green)':'var(--trail-red)'};">${remaining.toLocaleString('hu-HU')} Ft</span></div>
     </div>
 
+    <div class="sectiontitle">Kiadások megoszlása</div>
+    <div class="card">${renderExpenseDistribution(f)}</div>
+  `;
+
+  const kiadasokHtml = `
     <div class="sectiontitle">🔒 Kötelező kiadások <span class="mono small muted">${mandTotal.toLocaleString('hu-HU')} Ft</span></div>
     <div class="card" style="padding:4px 16px;">
       ${f.mandatory.map((x,idx)=>`<div class="row">
@@ -3947,7 +3962,9 @@ RENDERERS.finance = function(){
         <span class="mono small">${(o.amount||0).toLocaleString('hu-HU')} Ft</span>
       </div>`).join('')}
     </div>`:''}
+  `;
 
+  const megtakaritasHtml = `
     <div class="sectiontitle">🏦 Megtakarítás</div>
     ${f.savings.map((x,idx)=>{
       const pct = x.target? Math.min(100,Math.round(100*(x.saved||0)/x.target)) : 0;
@@ -3965,18 +3982,24 @@ RENDERERS.finance = function(){
       </div>`;
     }).join('')}
     <div class="small" style="margin:-6px 0 18px;color:var(--trail-yellow);cursor:pointer;" onclick="addSavingsSheet()">+ Új megtakarítási cél</div>
-
-    <div class="sectiontitle">Kiadások megoszlása</div>
-    <div class="card">${renderExpenseDistribution(f)}</div>
   `;
-  requestAnimationFrame(()=>{
-    const canvas = document.getElementById('chart-donut');
-    if(canvas) drawDonutChart(canvas, [
-      {value:Math.max(0,remaining), color:'#5C8F62'},
-      {value:mandTotal, color:'#4A85AC'},
-      {value:discSpent, color:'#D9A441'},
-    ], 'MARADÉK', remaining.toLocaleString('hu-HU')+' Ft');
-  });
+
+  const bodyHtml = App.ui.financeTab==='kiadasok' ? kiadasokHtml
+    : App.ui.financeTab==='megtakaritas' ? megtakaritasHtml
+    : attekintesHtml;
+
+  document.getElementById('view-finance').innerHTML = subHeader('Pénzügyek') + financeTopToggleHtml() + bodyHtml;
+
+  if(App.ui.financeTab==='attekintes'){
+    requestAnimationFrame(()=>{
+      const canvas = document.getElementById('chart-donut');
+      if(canvas) drawDonutChart(canvas, [
+        {value:Math.max(0,remaining), color:'#5C8F62'},
+        {value:mandTotal, color:'#4A85AC'},
+        {value:discSpent, color:'#D9A441'},
+      ], 'MARADÉK', remaining.toLocaleString('hu-HU')+' Ft');
+    });
+  }
 };
 function renderExpenseDistribution(f){
   const items=[...f.mandatory.map(x=>({name:x.name,icon:x.icon,val:x.amount||0})),
