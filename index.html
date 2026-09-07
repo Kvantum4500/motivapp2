@@ -4043,7 +4043,15 @@ function renderExpenseDistribution(f){
 function drawDonutChart(canvas,segments,centerLabel,centerValue){
   const ctx=setupCanvas(canvas), w=canvas._cssW, h=canvas._cssH;
   ctx.clearRect(0,0,w,h);
-  const cx=w/2, cy=h/2, r=Math.min(w,h)/2-6, rInner=r*0.62;
+  const cx=w/2, cy=h/2, r=Math.max(0,Math.min(w,h)/2-6), rInner=r*0.62;
+  /* r lehet 0 (vagy anélkül a fenti Math.max nélkül negatív), ha a canvas szülőjének
+     clientWidth-je épp 0 - ez akkor fordul elő, ha egy globális renderApp() úgy fut le,
+     hogy a Pénzügyek "Áttekintés" al-fül épp nincs láthatóan az aktív nézetben (setupCanvas()
+     a szülő clientWidth-jéből számol). Negatív sugárral ctx.arc() "IndexSizeError: The
+     radius provided is negative" hibával elszállna - ilyenkor egyszerűen nincs mit
+     kirajzolni (0 méretű canvas), a következő tényleges Pénzügyek/Áttekintés-megnyitáskor
+     (RENDERERS.finance() requestAnimationFrame-je) úgyis újrarajzolódik helyes mérettel. */
+  if(r<=0) return;
   const total=segments.reduce((s,x)=>s+Math.max(0,x.value),0)||1;
   let start=-Math.PI/2;
   segments.forEach(seg=>{
