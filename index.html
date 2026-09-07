@@ -344,12 +344,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.12';
+const APP_VERSION = '2.2.13';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.12';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.13';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -2136,7 +2136,16 @@ function saveNewWorkout(){
   const muscleGroups=[...document.querySelectorAll('#nw-muscles .chip.active')].map(c=>c.dataset.v);
   const entry = {id:uid(),category,date,durationMin,notes,muscleGroups};
   App.state.workouts.push(entry);
-  pushWorkoutFollowUp(entry); // ld. a definíciónál - ugyanaz az AI-mediált edzésnaplózással
+  // A kézi mentés már önmagában megerősítés (nincs jóváhagyó kártya, mint az
+  // AI-javaslatoknál) - ezért a mai edzés energiahatását itt közvetlenül
+  // App.state.activities-be írjuk, ugyanazzal az alapértelmezett becsléssel, mint
+  // amit applyAiSuggestion 's.type===workout' ága ír egy elfogadott AI-javaslatból.
+  if(date === todayISO()){
+    App.state.activities.push({id:uid(), type:'edzes', label:category, icon:'🏋️',
+      date, durationMin: durationMin||30, physical:6, mental:4, experience:6,
+      energyBefore:60, energyAfter:50, note:''});
+  }
+  pushWorkoutFollowUp(entry); // ld. a definíciónál - most már csak a kapcsolódó skilleket ajánlja fel
   saveState(); closeSheet(); toast('Edzés naplózva 💪'); renderApp();
 }
 
@@ -2744,7 +2753,7 @@ Ha van konkrét, felvehető javaslatod, a válaszod VÉGÉRE — a szöveges ré
 \`\`\`json
 {"suggestions":[{"type":"finance","name":"Telefon","amount":7480},{"type":"finance","name":"Áram","amount":3303}]}
 \`\`\`
-A type lehet "task" ({"type":"task","title":"...","dueEnd":"ÉÉÉÉ-HH-NN" (opcionális, csak több napos feladathoz)}) egyszerű teendőhöz, "event" ({"type":"event","title":"...","date":"ÉÉÉÉ-HH-NN","time":"ÓÓ:PP","endDate":"ÉÉÉÉ-HH-NN" (opcionális, csak több napos eseményhez)}) egy konkrét naptári időponthoz kötött eseményhez (NEM egyszerű teendő — akkor használd, ha a felhasználó egy dátumhoz/időponthoz köti a dolgot, pl. "holnap 15:00 fogorvos"), "finance" ({"type":"finance","name":"...","amount":szám}) akkor, ha a felhasználó egy már kifizetett vagy rögzítendő számlaösszeget közöl, "activity_template" ({"type":"activity_template","dayType":"nappal|ejszaka|pihen|szabi|egyeb","activity":{"label":"...","icon":"emoji","durationMin":szám,"physical":1-10,"mental":1-10,"experience":1-10,"energyBefore":0-100,"energyAfter":0-100}}) AKKOR, ha a felhasználó azt kéri, hogy egy aktivitást (pl. a mai naplózott munkát) mentsél el egy adott NAPTÍPUS alap/tipikus mintájaként, és alkalmazd a jövőbeli hasonló napokra is, "activity_log" ({"type":"activity_log","activityType":"edzes|tura|munka|haztartas|gaming|rajzolas|tanulas|projekt|utazas|piheno|szocialis|zene|egyeb","label":"...","durationMin":szám,"physical":1-10,"mental":1-10,"experience":1-10,"energyBefore":0-100,"energyAfter":0-100,"note":"..."}) AKKOR, ha a felhasználó egy EGYSZERI, aznapi tevékenységét (NEM edzést — arra a "workout" van) írja le energiahatással együtt (pl. "2 órát gameingeltem, 80-ról 60-ra esett az energiám") — ez táplálja a jelenlegi energiaszint-becslést és a tanult energia-átlagokat, "income" ({"type":"income","amount":szám}) AKKOR, ha a felhasználó a havi (nettó) fizetését/bevételét szeretné beállítani vagy módosítani, "schedule_pattern" ({"type":"schedule_pattern","startDate":"ÉÉÉÉ-HH-NN","pattern":["nappal"|"ejszaka"|"pihen"|"szabi"|"egyeb", ...]}) AKKOR, ha a felhasználó leírja a teljes ismétlődő műszakrendjét (pl. "3 nap nappalos, 3 nap éjszaka, 3 nap szabad, ismétlődik"), "workout" ({"type":"workout","category":"...","durationMin":szám,"muscleGroups":["mell"|"hat"|"vall"|"kar"|"core"|"lab", ...],"date":"ÉÉÉÉ-HH-NN","notes":"..."}) AKKOR, ha a felhasználó egy elvégzett edzést szeretne naplózni (muscleGroups és notes elhagyható, ha nem egyértelmű; date hiányában a mai nap) — EDZÉS UTÁN, ha a felhasználó NEM említi külön az energiaszint-hatást, a rendszer automatikusan rákérdez egy külön üzenetben, ezt NEKED NEM KELL megtenned, "weight" ({"type":"weight","kg":szám,"date":"ÉÉÉÉ-HH-NN"}) AKKOR, ha a felhasználó egy mért testsúlyt közöl (date hiányában a mai nap), "health_log" ({"type":"health_log","sleepH":szám,"steps":szám,"pulse":szám,"date":"ÉÉÉÉ-HH-NN"}) AKKOR, ha a felhasználó alvásidőt, lépésszámot vagy pulzust közöl kézzel (csak a ténylegesen említett mezőket add meg, a többit hagyd ki), "discretionary_spend" ({"type":"discretionary_spend","name":"...","amount":szám}) AKKOR, ha a felhasználó egy MÁR MEGLÉVŐ, a kontextusban látható egyéb (nem kötelező) kiadási keret terhére költött (a name-hez a pontosan meglévő kategórianevet használd), "savings_add" ({"type":"savings_add","name":"...","amount":szám}) AKKOR, ha a felhasználó egy MÁR MEGLÉVŐ, a kontextusban látható megtakarítási célra tett félretett összeget közöl, "journal" ({"type":"journal","mood":1-5,"text":"..."}) AKKOR, ha a felhasználó egy naplóbejegyzést/hangulatot szeretne rögzíteni (mood 1=nagyon rossz, 5=nagyon jó, elhagyható, ha nem egyértelmű), "skill_unlock" ({"type":"skill_unlock","skillName":"..."}) AKKOR, ha a felhasználó kifejezetten állítja, hogy elért/feloldott egy, a kontextusban "elérhető" (még nem feloldott, de a szülője már feloldva) skillt — a skillName-hez a LEHETŐ LEGPONTOSABBAN a meglévő skill nevét írd, "rpg_quest_add" ({"type":"rpg_quest_add","trackId":"freedom|finance|mental|physical|massage|video|camper|coding|relationship","text":"...","xp":10|20|35}) AKKOR, ha a felhasználó az Életkampányhoz (Kaland) szeretne egy küldetést felvenni az AKTUÁLIS ciklusra (a trackId-t a kontextusban kapott 9 terület közül válaszd a legjobban illő alapján, xp nehézség szerint: könnyű 10, közepes 20, nehéz 35), "rpg_quest_complete" ({"type":"rpg_quest_complete","text":"...","trackId":"... (opcionális, csak ha egyértelmű)"}) AKKOR, ha a felhasználó egy MÁR FELVETT, a kontextusban látható Kaland-küldetést jelent késznek — a text mezőbe a LEHETŐ LEGPONTOSABBAN a meglévő küldetés szövegét írd, hogy egyértelműen beazonosítható legyen, "start_journey" ({"type":"start_journey"}) AKKOR, ha a felhasználó egy túra/kirándulás GPS-követésének elindítását kéri (csak akkor javasold, ha a kontextus szerint épp NINCS folyamatban túrakövetés), vagy "stop_journey" ({"type":"stop_journey"}) AKKOR, ha egy FOLYAMATBAN LÉVŐ túra leállítását/mentését kéri (csak akkor javasold, ha a kontextus szerint épp FUT a túrakövetés). A pattern tömb egy TELJES ciklust írjon le, elemenként egy nap, a megadott sorrendben, a startDate-től kezdve, a startDate a felhasználó által megadott ELSŐ nap valódi ÉÉÉÉ-HH-NN dátuma (a lenti kontextusban kapott mai valódi dátumhoz viszonyítva számold ki az évet). FONTOS SZÓHASZNÁLAT: "szabadnap"/"szabad nap"/"pihenő" = pihen típus (NEM szabi!). "szabi"/"szabadság" típust csak akkor használj, ha a felhasználó kifejezetten tervezett szabadságot/PTO-t említ, nem simán pihenőnapot egy műszakciklusban. A dayType és a pattern elemei PONTOSAN ez az öt kulcs egyike lehet: nappal, ejszaka, pihen, szabi, egyeb. Az activity mezőket a kontextusban kapott, már rögzített aktivitás valós adataiból töltsd ki, ne találj ki újakat, ha a felhasználó egy meglévőre hivatkozik. ÁLTALÁNOS ELV: ha egy bejelentett esemény TÖBB területet is érint (pl. egy edzés az energiaszintet is), és a felhasználó ezt a MÁSIK hatást is konkrétan megadta ugyanabban az üzenetben, mindkettőhöz adj külön suggestions elemet — ne hagyd figyelmen kívül a mellékhatást csak azért, mert a fő téma más. HA A FELHASZNÁLÓ TÖBB TÉTELT SOROL FEL EGYSZERRE (pl. több számlát), MINDEGYIKHEZ ADJ KÜLÖN elemet a suggestions tömbben — soha ne vond össze egyetlen feladattá. Ha nincs konkrét javaslatod, hagyd ki teljesen a JSON blokkot.`;
+A type lehet "task" ({"type":"task","title":"...","dueEnd":"ÉÉÉÉ-HH-NN" (opcionális, csak több napos feladathoz)}) egyszerű teendőhöz, "event" ({"type":"event","title":"...","date":"ÉÉÉÉ-HH-NN","time":"ÓÓ:PP","endDate":"ÉÉÉÉ-HH-NN" (opcionális, csak több napos eseményhez)}) egy konkrét naptári időponthoz kötött eseményhez (NEM egyszerű teendő — akkor használd, ha a felhasználó egy dátumhoz/időponthoz köti a dolgot, pl. "holnap 15:00 fogorvos"), "finance" ({"type":"finance","name":"...","amount":szám}) akkor, ha a felhasználó egy már kifizetett vagy rögzítendő számlaösszeget közöl, "activity_template" ({"type":"activity_template","dayType":"nappal|ejszaka|pihen|szabi|egyeb","activity":{"label":"...","icon":"emoji","durationMin":szám,"physical":1-10,"mental":1-10,"experience":1-10,"energyBefore":0-100,"energyAfter":0-100}}) AKKOR, ha a felhasználó azt kéri, hogy egy aktivitást (pl. a mai naplózott munkát) mentsél el egy adott NAPTÍPUS alap/tipikus mintájaként, és alkalmazd a jövőbeli hasonló napokra is, "activity_log" ({"type":"activity_log","activityType":"edzes|tura|munka|haztartas|gaming|rajzolas|tanulas|projekt|utazas|piheno|szocialis|zene|egyeb","label":"...","durationMin":szám,"physical":1-10,"mental":1-10,"experience":1-10,"energyBefore":0-100,"energyAfter":0-100,"note":"..."}) AKKOR, ha a felhasználó egy EGYSZERI, aznapi tevékenységét (NEM edzést — arra a "workout" van) írja le energiahatással együtt (pl. "2 órát gameingeltem, 80-ról 60-ra esett az energiám") — ez táplálja a jelenlegi energiaszint-becslést és a tanult energia-átlagokat, "income" ({"type":"income","amount":szám}) AKKOR, ha a felhasználó a havi (nettó) fizetését/bevételét szeretné beállítani vagy módosítani, "schedule_pattern" ({"type":"schedule_pattern","startDate":"ÉÉÉÉ-HH-NN","pattern":["nappal"|"ejszaka"|"pihen"|"szabi"|"egyeb", ...]}) AKKOR, ha a felhasználó leírja a teljes ismétlődő műszakrendjét (pl. "3 nap nappalos, 3 nap éjszaka, 3 nap szabad, ismétlődik"), "workout" ({"type":"workout","category":"...","durationMin":szám,"muscleGroups":["mell"|"hat"|"vall"|"kar"|"core"|"lab", ...],"date":"ÉÉÉÉ-HH-NN","notes":"...","energyBefore":0-100,"energyAfter":0-100}) AKKOR, ha a felhasználó egy elvégzett edzést szeretne naplózni (muscleGroups és notes elhagyható, ha nem egyértelmű; date hiányában a mai nap; energyBefore/energyAfter csak MAI edzésnél add meg, ha a felhasználó konkrét energiaszint-hatást közölt — egyébként hagyd ki, MAI edzésnél a kártyán úgyis megjelenik szerkeszthetően egy 60→50 alapértelmezett becsléssel), "weight" ({"type":"weight","kg":szám,"date":"ÉÉÉÉ-HH-NN"}) AKKOR, ha a felhasználó egy mért testsúlyt közöl (date hiányában a mai nap), "health_log" ({"type":"health_log","sleepH":szám,"steps":szám,"pulse":szám,"date":"ÉÉÉÉ-HH-NN"}) AKKOR, ha a felhasználó alvásidőt, lépésszámot vagy pulzust közöl kézzel (csak a ténylegesen említett mezőket add meg, a többit hagyd ki), "discretionary_spend" ({"type":"discretionary_spend","name":"...","amount":szám}) AKKOR, ha a felhasználó egy MÁR MEGLÉVŐ, a kontextusban látható egyéb (nem kötelező) kiadási keret terhére költött (a name-hez a pontosan meglévő kategórianevet használd), "savings_add" ({"type":"savings_add","name":"...","amount":szám}) AKKOR, ha a felhasználó egy MÁR MEGLÉVŐ, a kontextusban látható megtakarítási célra tett félretett összeget közöl, "journal" ({"type":"journal","mood":1-5,"text":"..."}) AKKOR, ha a felhasználó egy naplóbejegyzést/hangulatot szeretne rögzíteni (mood 1=nagyon rossz, 5=nagyon jó, elhagyható, ha nem egyértelmű), "skill_unlock" ({"type":"skill_unlock","skillName":"..."}) AKKOR, ha a felhasználó kifejezetten állítja, hogy elért/feloldott egy, a kontextusban "elérhető" (még nem feloldott, de a szülője már feloldva) skillt — a skillName-hez a LEHETŐ LEGPONTOSABBAN a meglévő skill nevét írd, "rpg_quest_add" ({"type":"rpg_quest_add","trackId":"freedom|finance|mental|physical|massage|video|camper|coding|relationship","text":"...","xp":10|20|35}) AKKOR, ha a felhasználó az Életkampányhoz (Kaland) szeretne egy küldetést felvenni az AKTUÁLIS ciklusra (a trackId-t a kontextusban kapott 9 terület közül válaszd a legjobban illő alapján, xp nehézség szerint: könnyű 10, közepes 20, nehéz 35), "rpg_quest_complete" ({"type":"rpg_quest_complete","text":"...","trackId":"... (opcionális, csak ha egyértelmű)"}) AKKOR, ha a felhasználó egy MÁR FELVETT, a kontextusban látható Kaland-küldetést jelent késznek — a text mezőbe a LEHETŐ LEGPONTOSABBAN a meglévő küldetés szövegét írd, hogy egyértelműen beazonosítható legyen, "start_journey" ({"type":"start_journey"}) AKKOR, ha a felhasználó egy túra/kirándulás GPS-követésének elindítását kéri (csak akkor javasold, ha a kontextus szerint épp NINCS folyamatban túrakövetés), vagy "stop_journey" ({"type":"stop_journey"}) AKKOR, ha egy FOLYAMATBAN LÉVŐ túra leállítását/mentését kéri (csak akkor javasold, ha a kontextus szerint épp FUT a túrakövetés). A pattern tömb egy TELJES ciklust írjon le, elemenként egy nap, a megadott sorrendben, a startDate-től kezdve, a startDate a felhasználó által megadott ELSŐ nap valódi ÉÉÉÉ-HH-NN dátuma (a lenti kontextusban kapott mai valódi dátumhoz viszonyítva számold ki az évet). FONTOS SZÓHASZNÁLAT: "szabadnap"/"szabad nap"/"pihenő" = pihen típus (NEM szabi!). "szabi"/"szabadság" típust csak akkor használj, ha a felhasználó kifejezetten tervezett szabadságot/PTO-t említ, nem simán pihenőnapot egy műszakciklusban. A dayType és a pattern elemei PONTOSAN ez az öt kulcs egyike lehet: nappal, ejszaka, pihen, szabi, egyeb. Az activity mezőket a kontextusban kapott, már rögzített aktivitás valós adataiból töltsd ki, ne találj ki újakat, ha a felhasználó egy meglévőre hivatkozik. ÁLTALÁNOS ELV: ha egy bejelentett esemény TÖBB területet is érint (pl. egy edzés az energiaszintet is), és a felhasználó ezt a MÁSIK hatást is konkrétan megadta ugyanabban az üzenetben, mindkettőhöz adj külön suggestions elemet — ne hagyd figyelmen kívül a mellékhatást csak azért, mert a fő téma más. HA A FELHASZNÁLÓ TÖBB TÉTELT SOROL FEL EGYSZERRE (pl. több számlát), MINDEGYIKHEZ ADJ KÜLÖN elemet a suggestions tömbben — soha ne vond össze egyetlen feladattá. Ha nincs konkrét javaslatod, hagyd ki teljesen a JSON blokkot.`;
 
 function buildAiContext(){
   const iso = todayISO();
@@ -2807,6 +2816,17 @@ function parseAiResponse(raw){
   let suggestions=[];
   try{ const parsed=JSON.parse(jsonStr); suggestions = Array.isArray(parsed.suggestions) ? parsed.suggestions : []; }
   catch(e){ console.error('suggestion JSON parse failed', e, jsonStr); }
+  // A "workout" AI_SYSTEM leírása szerint a felhő-AI kihagyhatja az energyBefore/
+  // energyAfter mezőket mai edzésnél, ha a felhasználó nem közölt konkrét
+  // energiahatást - a promptban ígért 60→50 alapértelmezett becslést itt kell
+  // pótolni, mert a helyi parancs-parser (parseLocalWorkoutCommand) ugyanezt
+  // közvetlenül, magától teszi meg mai edzésnél; e nélkül a felhő-AI-s
+  // javaslatkártyán nem jelenne meg az energiamező, ellentétben az ígérttel.
+  suggestions.forEach(s=>{
+    if(s && s.type==='workout' && (!s.date || s.date===todayISO()) && s.energyBefore==null){
+      s.energyBefore = 60; s.energyAfter = 50;
+    }
+  });
   return {text: raw.slice(0,cutIdx).trim(), suggestions};
 }
 /* ===== HELYI AI PARANCSOK =====
@@ -2912,10 +2932,16 @@ function parseLocalWorkoutCommand(text){
     category=raw.replace(/^.*?edz[a-zA-ZáéíóöőúüűÁÉÍÓÖŐÚÜŰ]*\s*[:.,!?-]*\s*/i,'').trim();
   }
   if(!category) category='Edzés';
+  // Ha a category ténylegesen csak egy időtartam-kifejezés (pl. "30 percet"), az nem
+  // valódi edzéstípus-név - ilyenkor essünk vissza az általános 'Edzés' címkére
+  // (a durationMin-t a durMatch külön amúgy is kinyeri, nem veszik el semmi infó).
+  if(/^\d{1,3}\s*perc(?:et)?\.?$/i.test(category.trim())) category='Edzés';
   const durMatch = n.match(/(\d{1,3})\s*perc/);
   const durationMin = durMatch ? parseInt(durMatch[1],10) : null;
   const date = parsePastRelativeDateHU(n) || todayISO();
-  return {type:'workout', category, durationMin, date, muscleGroups:[], notes:''};
+  const result = {type:'workout', category, durationMin, date, muscleGroups:[], notes:''};
+  if(date === todayISO()){ result.energyBefore = 60; result.energyAfter = 50; }
+  return result;
 }
 
 /* parseLocalWeightCommand / parseLocalJournalCommand / parseLocalDiscretionarySpendCommand /
@@ -3444,7 +3470,9 @@ function renderAiChat(){
             <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${s.date||todayISO()}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Időtartam (perc)<input id="ai-sugg-dur-${i}-${si}" type="number" value="${parseInt(s.durationMin)||0}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Érintett izomcsoportok</label>
-            <div class="chiprow" id="ai-sugg-muscles-${i}-${si}">${MUSCLE_GROUPS.map(mg=>`<div class="chip ${(s.muscleGroups||[]).includes(mg.id)?'active':''}" data-v="${mg.id}">${mg.label}</div>`).join('')}</div>` : ''}
+            <div class="chiprow" id="ai-sugg-muscles-${i}-${si}">${MUSCLE_GROUPS.map(mg=>`<div class="chip ${(s.muscleGroups||[]).includes(mg.id)?'active':''}" data-v="${mg.id}">${mg.label}</div>`).join('')}</div>
+            ${s.energyBefore!=null? `<label class="small muted" style="display:block;margin-top:6px;">Energia előtte (0-100)<input id="ai-sugg-energybefore-${i}-${si}" type="number" min="0" max="100" value="${parseInt(s.energyBefore)??60}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Energia utána (0-100)<input id="ai-sugg-energyafter-${i}-${si}" type="number" min="0" max="100" value="${parseInt(s.energyAfter)??50}" style="width:100%;margin-top:2px;"></label>` : ''}` : ''}
           ${s.type==='activity_log'? `<label class="small muted" style="display:block;margin-top:6px;">Típus<select id="ai-sugg-atype-${i}-${si}" style="width:100%;margin-top:2px;">${ACTIVITY_TYPES.map(t=>`<option value="${t.id}" ${s.activityType===t.id?'selected':''}>${t.icon} ${t.name}</option>`).join('')}</select></label>
             <label class="small muted" style="display:block;margin-top:6px;">Időtartam (perc)<input id="ai-sugg-dur-${i}-${si}" type="number" value="${parseInt(s.durationMin)||0}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Energia előtte (0-100)<input id="ai-sugg-eb-${i}-${si}" type="number" min="0" max="100" value="${parseInt(s.energyBefore)??60}" style="width:100%;margin-top:2px;"></label>
@@ -3500,39 +3528,27 @@ function applyDayTypeTemplateForward(dayType, days){
   return count;
 }
 /* pushWorkoutFollowUp: terület-független "összefüggés" felismerés edzés
-   naplózása UTÁN - két, a kódban ténylegesen létező, de EGYMÁSTÓL FÜGGETLEN
-   rendszert köt össze:
-   1) App.state.workouts (edzésnapló) és App.state.activities (amit
-      todayEnergyLevel()/a tanult energia-átlagok néznek) KÜLÖN adatstruktúra
-      - egy edzés naplózása önmagában NEM hat az energiaszint-becslésre, amíg
-        nem születik hozzá activities-bejegyzés is.
-   2) a most edzett izomcsoportokhoz (MUSCLE_GROUPS) tartozó, allSkillNodes()
-      .muscles mezőn keresztül kapcsolódó, már "elérhető" (szülője feloldva,
-      ő maga még nem) skillek.
-   Mindkettő MEGERŐSÍTENDŐ javaslatként landol egy új MotivAI üzenetben, nem
-   automatikusan alkalmazva — az energiahatás és a skill-elérés is
-   szubjektív, önbevallásos adat, amit a felhasználónak kell megerősítenie.
+   naplózása UTÁN - a most edzett izomcsoportokhoz (MUSCLE_GROUPS) tartozó,
+   allSkillNodes().muscles mezőn keresztül kapcsolódó, már "elérhető" (szülője
+   feloldva, ő maga még nem) skilleket ajánlja fel.
+   (Az energiahatás - App.state.activities bejegyzés - mára nem itt, hanem
+   közvetlenül a workout-javaslat kártyáján/saveNewWorkout-ban kerül rögzítésre,
+   lásd applyAiSuggestion 's.type===workout' ága - egyetlen jóváhagyással.)
+   MEGERŐSÍTENDŐ javaslatként landol egy új MotivAI üzenetben, nem automatikusan
+   alkalmazva — a skill-elérés szubjektív, önbevallásos adat, amit a
+   felhasználónak kell megerősítenie.
    Ugyanez a hívás mind az AI-mediált (applyAiSuggestion 'workout' ága), mind
    a kézi "Új edzés" sheet (saveNewWorkout) útján érkező edzésre lefut, hogy a
    két belépési pont között ne legyen eltérés. */
 function pushWorkoutFollowUp(workout){
   const suggestions = [];
-  const isToday = !workout.date || workout.date === todayISO();
-  if(isToday){
-    suggestions.push({type:'activity_log', activityType:'edzes', label:workout.category||'Edzés',
-      durationMin: parseInt(workout.durationMin)||30, physical:6, mental:4, experience:6,
-      energyBefore:60, energyAfter:50});
-  }
   const musclesTrained = Array.isArray(workout.muscleGroups) ? workout.muscleGroups : [];
   const relatedSkills = musclesTrained.length
     ? allSkillNodes().filter(sk=>skillState(sk)==='available' && (sk.muscles||[]).some(m=>musclesTrained.includes(m)))
     : [];
   relatedSkills.slice(0,3).forEach(sk=>{ suggestions.push({type:'skill_unlock', skillName:sk.name}); });
   if(!suggestions.length) return;
-  const parts=[];
-  if(isToday) parts.push('hogyan hatott ez az energiaszintedre (állítsd be lent, vagy hagyd a becsült értéken)');
-  if(relatedSkills.length) parts.push('elérted-e valamelyik kapcsolódó skillt (jelöld lent, ha igen)');
-  App.state.aiChat.push({role:'assistant', content:'💪 Naplózva! Még két dolog, amit ez érinthet: '+parts.join(' és ')+'.', suggestions});
+  App.state.aiChat.push({role:'assistant', content:'💪 Naplózva! Még egy dolog, amit ez érinthet: elérted-e valamelyik kapcsolódó skillt (jelöld lent, ha igen).', suggestions});
 }
 /* applyAiSuggestion: a tényleges állapotmódosítás egy jóváhagyott javaslatra.
    Ezt hívja mind az AI-válaszból, mind a helyi parancsból (handleLocalAiCommand
@@ -3608,6 +3624,16 @@ function applyAiSuggestion(s){
     const muscleGroups = Array.isArray(s.muscleGroups) ? s.muscleGroups.filter(m=>MUSCLE_GROUPS.some(mg=>mg.id===m)) : [];
     const entry = {id:uid(),category:s.category||'Edzés',date:s.date||todayISO(),durationMin:parseInt(s.durationMin)||null,notes:s.notes||'',muscleGroups};
     App.state.workouts.push(entry);
+    // Ha a kártyán energiahatás is meg lett adva (mindig a mai edzésnél kínáljuk fel,
+    // lásd renderAiChat/parseLocalWorkoutCommand), egyetlen jóváhagyással a
+    // App.state.activities-be is felkerül ugyanaz az edzés - így nem kell egy MÁSODIK
+    // "⚡ ... naplózása" kártyát is jóváhagyni ugyanahhoz az edzéshez.
+    if(s.energyBefore!=null && s.energyAfter!=null){
+      App.state.activities.push({id:uid(), type:'edzes', label:s.category||'Edzés', icon:'🏋️',
+        date:s.date||todayISO(), durationMin:parseInt(s.durationMin)||30,
+        physical:6, mental:4, experience:6,
+        energyBefore:s.energyBefore, energyAfter:s.energyAfter, note:''});
+    }
     pushWorkoutFollowUp(entry);
     return '💪 '+(s.category||'Edzés')+' naplózva'+(s.date?' ('+fmtDateHu(s.date)+')':'')+' ✓';
   }
@@ -3762,10 +3788,14 @@ function acceptAiSuggestion(mi,si){
     const dateEl=document.getElementById('ai-sugg-date-'+mi+'-'+si);
     const durEl=document.getElementById('ai-sugg-dur-'+mi+'-'+si);
     const musclesRow=document.getElementById('ai-sugg-muscles-'+mi+'-'+si);
+    const ebEl=document.getElementById('ai-sugg-energybefore-'+mi+'-'+si);
+    const eaEl=document.getElementById('ai-sugg-energyafter-'+mi+'-'+si);
     if(catEl && catEl.value.trim()) s.category=catEl.value.trim();
     if(dateEl) s.date=dateEl.value||todayISO();
     if(durEl) s.durationMin=parseInt(durEl.value)||null;
     if(musclesRow) s.muscleGroups=[...musclesRow.querySelectorAll('.chip.active')].map(c=>c.dataset.v);
+    if(ebEl) s.energyBefore=parseInt(ebEl.value)||0;
+    if(eaEl) s.energyAfter=parseInt(eaEl.value)||0;
   } else if(s.type==='rpg_quest_add'){
     const trackEl=document.getElementById('ai-sugg-track-'+mi+'-'+si);
     const textEl=document.getElementById('ai-sugg-text-'+mi+'-'+si);
@@ -4354,8 +4384,8 @@ function saveWeight(){
 /* ---- achievements / settings / integrations / profile ---- */
 const ACHIEVEMENT_DEFS = [
   {id:'first_task',name:'Első lépés',icon:'✅',desc:'Teljesítettél egy feladatot',check:s=>s.tasks.some(t=>t.done)},
-  {id:'first_workout',name:'Bemelegítve',icon:'🏋️',desc:'Naplóztál egy edzést',check:s=>s.workouts.length>=1},
-  {id:'ten_workouts',name:'Kitartás',icon:'🔥',desc:'10 edzés naplózva',check:s=>s.workouts.length>=10},
+  {id:'first_workout',name:'Bemelegítve',icon:'🏋️',desc:'Naplóztál egy edzést',check:s=>(s.workouts.length + s.activities.filter(a=>a.type==='edzes').length)>=1},
+  {id:'ten_workouts',name:'Kitartás',icon:'🔥',desc:'10 edzés naplózva',check:s=>(s.workouts.length + s.activities.filter(a=>a.type==='edzes').length)>=10},
   {id:'first_skill',name:'Skill feloldva',icon:'🌟',desc:'Feloldottál egy skillt',check:s=>Object.values(s.skills).some(v=>v)},
   {id:'first_journey',name:'Első túra',icon:'🥾',desc:'Elmentettél egy túrát',check:s=>s.journeys.length>=1},
   {id:'50km',name:'Terepjáró',icon:'🏔️',desc:'50 km összesen túrázva',check:s=>s.journeys.reduce((a,j)=>a+(j.distanceKm||0),0)>=50},
@@ -5594,7 +5624,7 @@ function rpgResetCampaign(){
    megnyitáskor, ha App.state.rpg.onboarded még false. ---- */
 function rpgShowOnboarding(){
   const m = App.state.rpg.meta;
-  openSheet(`<div class="sheet-head"><div class="sheet-title">⚔️ Üdv a kampányban!</div></div>
+  openSheet(`<div class="sheet-head"><div class="sheet-title">⚔️ Üdv a kampányban!</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     <p class="small muted" style="margin-bottom:16px;">${rpgWeeksTotal()} ciklus, ${RPG_TRACKS.length} fejlesztendő terület, ciklusonkénti küldetések, negyedéves boss fightok. Adj a karakterednek nevet, és indulhat az első ciklus.</p>
     <div class="field"><label>Karakter neve</label><input type="text" id="rpg-onboard-name" placeholder="pl. Kvantum"></div>
     <div class="field"><label>Mikor kezdődjön az 1. ciklus?</label><input type="date" id="rpg-onboard-date" value="${escapeHtml(m.startDate)}"></div>
