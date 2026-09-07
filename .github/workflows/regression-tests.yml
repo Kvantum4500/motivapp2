@@ -1,0 +1,76 @@
+name: Regression tests + version sync check
+
+# Ellentétben a build-apk.yml-lel (ami lassú - Android SDK + Gradle -, ezért
+# csak kézzel indítható), ez a workflow gyors, és pontosan azt a biztonsági
+# hálót adja, ami eddig hiányzott: minden push-nál és PR-nál lefuttatja az
+# index.html-be épített runRegressionChecks() öntesztkészletet valódi
+# fejnélküli böngészőben (lásd scripts/ci-regression-check.js), és
+# ellenőrzi, hogy az app-verzió és a service worker cache-neve szinkronban
+# maradt-e.
+on:
+  push:
+    branches:
+      - main
+  pull_request: {}
+
+jobs:
+  regression:
+    name: Regression checks (runRegressionChecks in headless Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Szándékosan NINCS package.json/lockfile a repo gyökerében - az app
+      # maga build lépés nélküli, egyetlen HTML fájl, és ez így is marad.
+      # A Playwright-ot itt, a CI job-ban, efemer módon telepítjük.
+      - name: Install Playwright (ephemeral, not committed)
+        run: npm install --no-save playwright
+
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Run runRegressionChecks() against index.html
+        run: node scripts/ci-regression-check.js
+
+  version-sync-check:
+    name: APP_VERSION / SW cache name sync check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # APP_VERSION (index.html), EXPECTED_SW_CACHE_NAME (index.html) és
+      # CACHE_NAME (sw.js) a repo konvenciója szerint mindig EGYÜTT
+      # bumpolandók (lásd a sw.js tetején lévő figyelmeztető kommentet) -
+      # eddig ezt semmi nem kényszerítette ki. Ez a lépés kibányássza mind a
+      # hármat, és hibával leáll, ha nem esnek egybe.
+      - name: Check APP_VERSION / EXPECTED_SW_CACHE_NAME / sw.js CACHE_NAME are in sync
+        run: |
+          set -euo pipefail
+
+          APP_VERSION=$(grep -oP "const APP_VERSION\s*=\s*'\K[^']+" index.html)
+          EXPECTED_SW_CACHE_NAME=$(grep -oP "const EXPECTED_SW_CACHE_NAME\s*=\s*'\K[^']+" index.html)
+          SW_CACHE_NAME=$(grep -oP "const CACHE_NAME\s*=\s*'\K[^']+" sw.js)
+
+          echo "index.html APP_VERSION            = $APP_VERSION"
+          echo "index.html EXPECTED_SW_CACHE_NAME  = $EXPECTED_SW_CACHE_NAME"
+          echo "sw.js CACHE_NAME                   = $SW_CACHE_NAME"
+
+          EXPECTED_FROM_VERSION="motivapp-cache-v${APP_VERSION}"
+
+          if [ "$EXPECTED_SW_CACHE_NAME" != "$SW_CACHE_NAME" ] || [ "$EXPECTED_SW_CACHE_NAME" != "$EXPECTED_FROM_VERSION" ]; then
+            echo "::error::Version/cache-name mismatch detected!"
+            echo "  index.html APP_VERSION           -> $APP_VERSION (implies expected cache name: $EXPECTED_FROM_VERSION)"
+            echo "  index.html EXPECTED_SW_CACHE_NAME -> $EXPECTED_SW_CACHE_NAME"
+            echo "  sw.js CACHE_NAME                  -> $SW_CACHE_NAME"
+            echo "These three must always be bumped together - see the comment at the top of sw.js."
+            exit 1
+          fi
+
+          echo "OK: APP_VERSION, EXPECTED_SW_CACHE_NAME and sw.js CACHE_NAME are all in sync."
