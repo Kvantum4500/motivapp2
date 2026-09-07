@@ -3650,10 +3650,15 @@ function pushWorkoutFollowUp(workout){
    napon MINDEGYIKEN volt naplózott edzés (App.state.workouts, dátum szerint,
    MAI naptól visszafelé), egy "fizikai" Kaland-küldetést ajánlunk fel
    rpg_quest_add javaslatként — MEGERŐSÍTENDŐ kártyaként, ugyanúgy, mint minden
-   más AI-javaslat (ld. pushWorkoutFollowUp fenti mintáját). Ugyanabból a két
-   helyről hívjuk, ahonnan pushWorkoutFollowUp is fut (saveNewWorkout és
-   applyAiSuggestion 's.type===workout' ága), új edzés MENTÉSE után, nem egy
-   külön időzítővel/pollerrel.
+   más AI-javaslat (ld. pushWorkoutFollowUp fenti mintáját). Jelenleg csak a
+   kézi edzés-mentésből (saveNewWorkout) hívjuk, új edzés MENTÉSE után, nem egy
+   külön időzítővel/pollerrel — az applyAiSuggestion 's.type===workout' ágát
+   (ahonnan pushWorkoutFollowUp fenti MÁSIK hívása is fut) SZÁNDÉKOSAN nem
+   módosítottuk itt, hogy ne ütközzön egy párhuzamosan futó applyAiSuggestion-
+   refaktorral - emiatt egy AI-chat/helyi-parancson át naplózott (nem a
+   kézi lapon rögzített) edzés egyelőre NEM számít bele ebbe a sorozat-
+   figyelésbe. Ha ez zavaró, egy követő módosítás hozzáadhatja ugyanezt a
+   hívást oda is, a refaktor lezárása után.
    Duplikáció-védelem: App.state.rpg.workoutStreakQuestSuggestedDates — a már
    felajánlott sorozat ZÁRÓ napjait tárolja, ugyanúgy, ahogy bossNotified a már
    értesített negyedév-indexeket (ld. ott) — így ugyanaz a lezárt sorozat nem
