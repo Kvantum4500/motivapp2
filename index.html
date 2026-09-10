@@ -374,12 +374,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.22';
+const APP_VERSION = '2.2.23';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.22';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.23';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -5932,11 +5932,42 @@ function manageSavingsSheet(id){
   const idx=App.state.finance.savings.findIndex(i=>i.id===id);
   const len=App.state.finance.savings.length;
   openSheet(`<div class="sheet-head"><div class="sheet-title">${escapeHtml(x.name)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
-    <div class="flex gap8" style="margin-top:4px;">
+    <div class="field"><label>Megnevezés</label><input type="text" id="sv-edit-name" value="${escapeHtml(x.name)}"></div>
+    <div class="field"><label>Ikon (emoji)</label><input type="text" id="sv-edit-icon" value="${escapeHtml(x.icon||'🏦')}" maxlength="16" style="width:70px;font-size:20px;text-align:center;"></div>
+    <div class="field"><label>Célösszeg (Ft)</label><input type="number" id="sv-edit-target" min="0" value="${x.target||0}"></div>
+    <div class="field"><label>Eddig félretett összeg (Ft)</label><input type="number" id="sv-edit-saved" min="0" value="${x.saved||0}" style="font-size:20px;text-align:center;padding:16px;"></div>
+    <button class="btn btn-primary btn-block" onclick="saveSavingsEdits('${id}')">Mentés</button>
+    <div class="hr"></div>
+    <div class="flex gap8" style="margin-top:10px;">
       <button class="btn btn-ghost btn-sm" style="flex:1;${idx===0?'opacity:0.35;cursor:not-allowed;':''}" ${idx===0?'disabled':''} onclick="moveFinanceItem('savings','${id}',-1);closeSheet();">⬆️ Feljebb</button>
       <button class="btn btn-ghost btn-sm" style="flex:1;${idx===len-1?'opacity:0.35;cursor:not-allowed;':''}" ${idx===len-1?'disabled':''} onclick="moveFinanceItem('savings','${id}',1);closeSheet();">⬇️ Lejjebb</button>
     </div>
     <button class="btn btn-danger btn-sm btn-block" style="margin-top:8px;" onclick="removeFinanceItem('savings','${id}');closeSheet();">🗑️ Törlés</button>`);
+}
+/* saveSavingsEdits: a megtakarítási célok eddig csak a nézet sorrendjében
+   voltak mozgathatók/törölhetők, a félretett összeg pedig csak NÖVELHETŐ
+   volt (addToSavingsSheet()/saveSavingsAdd() - "Befizetés") - sem a
+   megnevezés, sem az ikon, sem a célösszeg nem volt utólag módosítható,
+   csak létrehozáskor (ld. addSavingsSheet()/saveSavingsGoal()). Ugyanaz a
+   minta, mint a saveDiscretionaryEdits()-nél: közvetlenül beállítja (nem
+   hozzáadja) az egyes mezőket. A checkSavingsGoalMilestone() hívása itt is
+   megtörténik, hogy egy közvetlen szerkesztéssel (nem csak "Befizetés"-sel)
+   elért 100%-os cél is kiváltsa ugyanazt az ünneplő/Kaland-javaslatot. */
+function saveSavingsEdits(id){
+  const x=App.state.finance.savings.find(i=>i.id===id); if(!x) return;
+  const name=(document.getElementById('sv-edit-name').value||'').trim();
+  if(!name){ toast('Adj meg egy nevet'); return; }
+  const icon=(document.getElementById('sv-edit-icon').value||'').trim();
+  const target=parseFloat(document.getElementById('sv-edit-target').value)||0;
+  if(target<0){ toast('A célösszeg nem lehet negatív'); return; }
+  const saved=parseFloat(document.getElementById('sv-edit-saved').value)||0;
+  if(saved<0){ toast('A félretett összeg nem lehet negatív'); return; }
+  x.name=name;
+  x.icon=icon||'🏦';
+  x.target=target;
+  x.saved=saved;
+  checkSavingsGoalMilestone(x);
+  saveState(); closeSheet(); toast('Mentve'); RENDERERS.finance();
 }
 function removeFinanceItem(kind,id){
   const arr=App.state.finance[kind];
