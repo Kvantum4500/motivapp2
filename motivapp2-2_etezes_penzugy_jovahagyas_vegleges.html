@@ -254,6 +254,14 @@ a{color:inherit;}
 .sheet-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;}
 .sheet-title{font-family:var(--font-display);font-weight:800;font-size:17px;}
 
+/* ===== HELYI UJJLENYOMATOS ZÁROLÁS (WebAuthn) ===== */
+/* Magasabb z-index, mint a .sheetbg (90) - ez a réteg MINDENT eltakar,
+   induláskor, MIELŐTT a felhasználó eloldaná ujjlenyomattal/jelszóval,
+   ld. az index.html script "HELYI UJJLENYOMATOS GYORSBELÉPÉS" szekcióját. */
+.webauthn-lock-overlay{position:fixed;inset:0;background:var(--ink);z-index:200;display:none;align-items:center;justify-content:center;padding:24px;}
+.webauthn-lock-overlay.open{display:flex;}
+.webauthn-lock-card{width:100%;max-width:360px;background:var(--surface);border:1px solid var(--line-strong);border-radius:var(--radius-l);padding:26px 22px;animation:sheetup .2s ease;}
+
 /* ===== TOAST ===== */
 #toast{position:fixed;bottom:calc(90px + var(--safe-bottom));left:50%;transform:translateX(-50%) translateY(20px);background:var(--paper);color:var(--ink);padding:10px 18px;border-radius:999px;font-weight:600;font-size:13px;z-index:99;opacity:0;transition:.2s;pointer-events:none;white-space:nowrap;}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
@@ -339,6 +347,13 @@ a{color:inherit;}
 
   <div class="sheetbg" id="sheetbg"><div class="sheet" id="sheet" role="dialog" aria-modal="true"></div></div>
   <div id="toast" role="status" aria-live="polite"></div>
+  <!-- webauthn-lock-overlay: statikus, de alapból REJTETT (nincs "open" class)
+       konténer - csak akkor kap "open" class-t (ld. webauthnLockShow()), ha
+       ezen az eszközön korábban be volt jelentkezve ÉS be van kapcsolva az
+       ujjlenyomatos gyorsbelépés (ld. a fő script "HELYI UJJLENYOMATOS
+       GYORSBELÉPÉS" szekcióját). Tartalmát mindig JS tölti fel
+       (refreshWebauthnLockOverlay()), üresen indul. -->
+  <div class="webauthn-lock-overlay" id="webauthn-lock-overlay" role="dialog" aria-modal="true" aria-label="Alkalmazás zárolva"></div>
 </div>
 
 <!-- Firebase COMPAT SDK: SZÁNDÉKOSAN NINCS itt statikus <script src> tag rá.
@@ -359,12 +374,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.20';
+const APP_VERSION = '2.2.21';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.20';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.21';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -546,6 +561,16 @@ App.cloud = {
   migrationPending:false, // igaz, ha új fiók + van helyi adat -> a user még nem döntött a feltöltésről
   conflictPending:false,  // igaz, ha van felhő ÉS helyi adat is -> a user még nem döntött, melyiket tartsa meg
   pendingCloudData:null,  // a conflictPending alatt a lekért (de még nem alkalmazott) felhő-dokumentum
+};
+/* App.webauthnLock: a HELYI UJJLENYOMATOS ZÁROLÁS (WebAuthn) FUTÁSIDEJŰ UI-
+   állapota (ld. lentebb a "HELYI UJJLENYOMATOS GYORSBELÉPÉS" szekciót).
+   Ugyanúgy SZÁNDÉKOSAN nincs az App.state-ben, mint App.cloud - ez sem
+   perzisztálandó/felhőbe mentendő adat. */
+App.webauthnLock = {
+  active:false,   // igaz, amíg a zároló overlay látszik
+  mode:'biometric', // 'biometric'|'password' - melyik feloldási mód UI-ja aktív
+  error:null,     // utolsó feloldási kísérlet hibaüzenete (magyar, megjelenítendő)
+  busy:false,     // igaz egy folyamatban lévő feloldási kísérlet alatt (gomb letiltva)
 };
 
 /* ===== ROBUSZTUS HELYI TÁROLÁS =====
@@ -1066,6 +1091,7 @@ function cloudSignOut(){
   if(fbAuth){
     fbAuth.signOut().catch(e=>console.warn('MotivApp: kijelentkezés sikertelen.', e));
   }
+  if(typeof webauthnClearEnrollmentFlagOnSignOut==='function') webauthnClearEnrollmentFlagOnSignOut();
 }
 function cloudSyncStatusText(){
   const c = App.cloud;
@@ -1113,7 +1139,8 @@ function cloudSyncSectionHtml(){
     <div class="card">
       <div class="row"><div class="row-main"><div class="row-title" id="cloud-account-email">${escapeHtml(user.email||'')}</div><div class="row-sub" id="cloud-sync-status">${cloudSyncStatusText()}</div></div></div>
       <button class="btn btn-block" id="cloud-signout-btn" style="margin-top:10px;" onclick="cloudSignOut()">Kijelentkezés</button>
-    </div>`;
+    </div>
+    ${webauthnEnrollSectionHtml()}`;
 }
 
 /* ---- Első bejelentkezés / új eszköz - migráció/ütközés megerősítő sheet ----
@@ -1161,6 +1188,323 @@ window.addEventListener('offline', ()=>{ if(App.cloud.user){ refreshCloudSection
    await loadState() UTÁN történik - így egy már bejelentkezett (LOCAL
    persistence) felhasználó onAuthStateChanged-visszahívása sosem előzheti
    meg App.state betöltését (ami null/félkész állapotot pusholna a felhőbe). */
+
+
+/* ================= HELYI UJJLENYOMATOS GYORSBELÉPÉS (WebAuthn, OPCIONÁLIS) =================
+   FONTOS BIZTONSÁGI KERETEZÉS - ez NEM egy szerver által kriptográfiailag
+   ellenőrzött második hitelesítési faktor ("valódi" FIDO2/WebAuthn login),
+   mert ennek az appnak nincs saját backendje, ami egy WebAuthn-aláírást
+   szerveroldalon ellenőrizni tudna (ez lenne a "valódi" garancia egy normál
+   WebAuthn bejelentkezésnél). Ehelyett ez egy HELYI, eszköz-feloldó "kapu" a
+   Phase A által már megőrzött Firebase-munkamenet FÖLÖTT (ld. fentebb:
+   firebase.auth.Auth.Persistence.LOCAL - a fiók ebből a szempontból már
+   "be van jelentkezve" ezen az eszközön, itt nincs szükség újbóli
+   szerver-hitelesítésre minden feloldáskor).
+   - A "biztonsági" garancia forrása KIZÁRÓLAG a navigator.credentials.get()
+     böngésző-API saját promise feloldása/elutasítása: a userVerification:
+     "required" opcióval csak akkor oldódik fel sikeresen, ha a platform
+     hitelesítő (Android ujjlenyomat, Windows Hello, Touch ID) TÉNYLEGESEN
+     ellenőrizte a jelenlévő személyt - ezt a böngésző/OS kényszeríti ki,
+     NEM ez a JS kód.
+   - SZÁNDÉKOSAN NINCS kézzel megírt WebAuthn-aláírás-ellenőrzés
+     (SubtleCrypto/WebCrypto a tárolt publikus kulcs ellen) - ez valódi
+     kriptográfia lenne, amit könnyű finoman elrontani, jelentős
+     bonyolultságot adna hozzá, és nem javítaná érdemben a biztonsági modellt
+     ebben a kontextusban (a "mi van, ha nem az ujjlenyomat-tulajdonos/nem
+     működik az ujjlenyomat" esetre a VALÓDI hátsó védelmi vonal a lenti
+     jelszavas B opció, ami TÉNYLEGESEN szerver-oldali ellenőrzést végez a
+     fbAuth.currentUser.reauthenticateWithCredential()-lel).
+   - Ez tehát olyan, mint egy telefon saját képernyőzára - NEM olyan, mint
+     egy banki bejelentkezés. Ez egy TUDATOS, indokolt terjedelem-döntés,
+     nem hiányosság.
+
+   Tárolás: a `credential.id`-t (base64url) ESZKÖZENKÉNT, `uid`-hez kötve
+   tároljuk localStorage-ban (motivapp2:webauthnCred:<uid>) - ez SOSEM
+   szinkronizálódik Firestore-ba (más eszközön értelmezhetetlen lenne).
+   Emellett egy könnyű, tetején lévő `motivapp2:webauthnEnrolledUid` jelzőt is
+   tartunk (az aktuálisan beregisztrált uid), hogy induláskor, MIELŐTT a
+   Firebase visszaigazolná, KI a bejelentkezett felhasználó, a boot-kód olcsón
+   el tudja dönteni, hogy kell-e zároló overlay-t mutatnia.
+
+   CI-biztonság: az overlay CSAK akkor jelenik meg induláskor, ha (a)
+   CLOUD_LOGIN_FLAG_KEY==='1' (korábbi, valódi bejelentkezés ezen az
+   eszközön) ÉS (b) van ehhez tárolt WebAuthn credential - a runRegressionChecks()
+   CI-futása mindig teljesen tiszta localStorage-ból indul, tehát ez a blokk
+   ott sosem aktiválódik (ld. scripts/test-webauthn-lock.js 1. tesztje). */
+
+const WEBAUTHN_CRED_PREFIX = 'motivapp2:webauthnCred:'; // + uid -> credential.id (base64url)
+const WEBAUTHN_ENROLLED_UID_KEY = 'motivapp2:webauthnEnrolledUid'; // az aktuálisan beregisztrált uid, vagy nincs kulcs
+
+function webauthnCredIdForUid(uidVal){
+  if(!uidVal) return null;
+  try{ return localStorage.getItem(WEBAUTHN_CRED_PREFIX+uidVal); }catch(e){ return null; }
+}
+function webauthnIsEnrolledForUid(uidVal){
+  return !!webauthnCredIdForUid(uidVal);
+}
+/* webauthnLockShouldShow(): induláskori, OLCSÓ (csak localStorage-ot olvasó)
+   döntés arról, kell-e a zároló overlay-t azonnal megmutatni - ld. init()
+   a fájl végén, pontosan ott, ahol az ensureCloudInit() induló hívása is
+   történik. */
+function webauthnLockShouldShow(){
+  try{
+    if(localStorage.getItem(CLOUD_LOGIN_FLAG_KEY)!=='1') return false;
+    const enrolledUid = localStorage.getItem(WEBAUTHN_ENROLLED_UID_KEY);
+    if(!enrolledUid) return false;
+    return webauthnIsEnrolledForUid(enrolledUid);
+  }catch(e){ return false; }
+}
+
+/* Base64url <-> ArrayBuffer segédek a WebAuthn API bináris mezőihez
+   (credential.id/rawId, challenge, user.id). */
+function webauthnBufToBase64Url(buf){
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for(let i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function webauthnBase64UrlToBuf(b64url){
+  let b64 = String(b64url).replace(/-/g,'+').replace(/_/g,'/');
+  while(b64.length % 4) b64 += '=';
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
+
+/* ---- Feature-detect (platform hitelesítő elérhetősége) ----
+   Aszinkron API, ezért NEM lehet szinkron sztring-építő függvényben
+   (cloudSyncSectionHtml()) meghívni - ugyanaz az idempotens "ellenőrizd
+   egyszer, cache-eld, majd frissítsd a szekciót" minta, mint
+   ensureCloudInit()/_fbInitAttempted-nél. */
+let _webauthnPlatformAvailable = null; // null=még nem ismert, true/false=ismert eredmény
+function ensureWebauthnAvailabilityCheck(){
+  if(_webauthnPlatformAvailable !== null) return;
+  if(!window.PublicKeyCredential || typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable !== 'function'){
+    _webauthnPlatformAvailable = false;
+    return;
+  }
+  PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(avail=>{
+    _webauthnPlatformAvailable = !!avail;
+    refreshCloudSection();
+  }).catch(e=>{
+    console.warn('MotivApp: platform hitelesítő elérhetőségének ellenőrzése sikertelen.', e);
+    _webauthnPlatformAvailable = false;
+    refreshCloudSection();
+  });
+}
+
+/* ---- Beiratkozás/leiratkozás UI (Beállítások -> Fiók és szinkronizáció, a
+   bejelentkezett fiók-kártya alatt) ---- */
+function webauthnEnrollSectionHtml(){
+  if(_webauthnPlatformAvailable !== true) return ''; // nem támogatott/ismeretlen -> NINCS UI (nem hiba)
+  const user = App.cloud.user;
+  if(!user) return ''; // csak már bejelentkezett felhasználónak
+  if(webauthnIsEnrolledForUid(user.uid)){
+    return `<div class="card" id="webauthn-enroll-card" style="margin-top:10px;">
+      <div class="row"><div class="row-main"><div class="row-title">🔓 Ujjlenyomatos gyorsbelépés</div><div class="row-sub">Be van kapcsolva ezen az eszközön</div></div></div>
+      <button class="btn btn-block" style="margin-top:10px;" onclick="webauthnDisenroll()">Kikapcsolás ezen az eszközön</button>
+    </div>`;
+  }
+  return `<div class="card" id="webauthn-enroll-card" style="margin-top:10px;">
+    <div class="row-title" style="margin-bottom:4px;">🔒 Ujjlenyomatos gyorsbelépés</div>
+    <div class="small muted" style="margin-bottom:12px;">Bejelentkezés után ujjlenyomattal is feloldhatod az appot ezen az eszközön — ha nem működik, jelszóval mindig be tudsz lépni.</div>
+    <button class="btn btn-primary btn-block" id="webauthn-enroll-btn" onclick="webauthnEnroll()">Ujjlenyomatos gyorsbelépés bekapcsolása</button>
+  </div>`;
+}
+async function webauthnEnroll(){
+  const user = App.cloud.user;
+  if(!user){ toast('Előbb jelentkezz be.'); return; }
+  try{
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const userIdBytes = crypto.getRandomValues(new Uint8Array(16));
+    const cred = await navigator.credentials.create({
+      publicKey:{
+        challenge,
+        rp:{ id: location.hostname, name:'MotivApp 2.0' },
+        user:{ id:userIdBytes, name:user.email||'motivapp-felhasznalo', displayName:user.email||'MotivApp felhasználó' },
+        pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}],
+        authenticatorSelection:{ authenticatorAttachment:'platform', userVerification:'required' },
+        timeout:60000,
+        attestation:'none',
+      }
+    });
+    if(!cred || !cred.rawId) throw new Error('Nem érkezett credential.');
+    const credId = webauthnBufToBase64Url(cred.rawId);
+    localStorage.setItem(WEBAUTHN_CRED_PREFIX+user.uid, credId);
+    localStorage.setItem(WEBAUTHN_ENROLLED_UID_KEY, user.uid);
+    toast('Ujjlenyomatos gyorsbelépés bekapcsolva ezen az eszközön.');
+  }catch(e){
+    // Felhasználó megszakította / nincs hardver / időtúllépés stb. - NEM
+    // fatális, az app többi része (és maga a fiók/szinkron) változatlanul
+    // működik, csak a toast jelzi a felhasználónak.
+    console.warn('MotivApp: WebAuthn regisztráció sikertelen vagy megszakítva.', e);
+    toast('Nem sikerült beállítani az ujjlenyomatos gyorsbelépést. Próbáld újra, vagy folytasd jelszóval.');
+  }
+  refreshCloudSection();
+}
+function webauthnDisenroll(){
+  const user = App.cloud.user;
+  try{
+    if(user) localStorage.removeItem(WEBAUTHN_CRED_PREFIX+user.uid);
+    localStorage.removeItem(WEBAUTHN_ENROLLED_UID_KEY);
+  }catch(e){ /* no-op */ }
+  toast('Ujjlenyomatos gyorsbelépés kikapcsolva ezen az eszközön.');
+  refreshCloudSection();
+}
+/* Kijelentkezéskor a jelenlegi eszköz enrollment-jelzőjét is töröljük - egy
+   kijelentkezett/más fiókkal újra belépő felhasználó ne találkozzon egy
+   korábbi (más) fiókhoz tartozó ujjlenyomat-zárolással. Az uid-hez kötött
+   `webauthnCred:<uid>` bejegyzés megmarad (ha ugyanaz a fiók lép be újra
+   ezen az eszközön, a régi regisztráció még mindig érvényes lehetne, de a
+   `webauthnEnrolledUid` jelző nélkül a boot-kód ezt már nem ajánlja fel
+   automatikusan zárolásként, amíg a felhasználó újra be nem kapcsolja). */
+function webauthnClearEnrollmentFlagOnSignOut(){
+  try{ localStorage.removeItem(WEBAUTHN_ENROLLED_UID_KEY); }catch(e){ /* no-op */ }
+}
+
+/* ---- A zároló overlay maga (induláskori "eszköz-feloldó kapu") ---- */
+function webauthnLockOverlayHtml(){
+  const st = App.webauthnLock;
+  const knownEmail = (App.cloud.user && App.cloud.user.email) || '';
+  if(st.mode==='password'){
+    return `<div class="webauthn-lock-card">
+      <div style="font-size:40px;text-align:center;margin-bottom:6px;">🔒</div>
+      <div style="font-weight:700;font-size:17px;text-align:center;margin-bottom:6px;">Alkalmazás zárolva</div>
+      <div class="small muted" style="text-align:center;margin-bottom:16px;">Jelentkezz be jelszóval a folytatáshoz.</div>
+      <div class="field"><label>E-mail cím</label><input type="email" id="webauthn-lock-email" autocomplete="email" placeholder="pelda@email.hu" value="${escapeHtml(knownEmail)}" ${knownEmail?'readonly':''}></div>
+      <div class="field"><label>Jelszó</label><input type="password" id="webauthn-lock-password" autocomplete="current-password" placeholder="jelszó"></div>
+      ${st.error ? `<div class="small" id="webauthn-lock-error" style="color:var(--trail-red);margin-bottom:10px;">${escapeHtml(st.error)}</div>` : ''}
+      <button class="btn btn-primary btn-block" id="webauthn-lock-submit-btn" ${st.busy?'disabled':''} onclick="webauthnLockSubmitPassword()">${st.busy?'Kérlek várj…':'Feloldás jelszóval'}</button>
+      <button class="btn btn-block" style="margin-top:8px;" onclick="webauthnLockSwitchMode('biometric')">Vissza az ujjlenyomathoz</button>
+    </div>`;
+  }
+  return `<div class="webauthn-lock-card">
+    <div style="font-size:40px;text-align:center;margin-bottom:6px;">🔒</div>
+    <div style="font-weight:700;font-size:17px;text-align:center;margin-bottom:6px;">Alkalmazás zárolva</div>
+    <div class="small muted" style="text-align:center;margin-bottom:16px;">Oldd fel ujjlenyomattal a folytatáshoz.</div>
+    ${st.error ? `<div class="small" id="webauthn-lock-error" style="color:var(--trail-red);margin-bottom:12px;text-align:center;">${escapeHtml(st.error)}</div>` : ''}
+    <button class="btn btn-primary btn-block" id="webauthn-lock-biometric-btn" ${st.busy?'disabled':''} onclick="webauthnLockTryBiometric()">${st.busy?'Kérlek várj…':'Feloldás ujjlenyomattal'}</button>
+    <button class="btn btn-block" id="webauthn-lock-password-link" style="margin-top:8px;" onclick="webauthnLockSwitchMode('password')">Jelszóval</button>
+  </div>`;
+}
+function refreshWebauthnLockOverlay(){
+  const el = document.getElementById('webauthn-lock-overlay');
+  if(!el) return;
+  el.innerHTML = App.webauthnLock.active ? webauthnLockOverlayHtml() : '';
+  el.classList.toggle('open', !!App.webauthnLock.active);
+}
+function webauthnLockShow(){
+  App.webauthnLock.active = true;
+  App.webauthnLock.mode = 'biometric';
+  App.webauthnLock.error = null;
+  App.webauthnLock.busy = false;
+  refreshWebauthnLockOverlay();
+}
+function webauthnLockHide(){
+  App.webauthnLock.active = false;
+  refreshWebauthnLockOverlay();
+}
+function webauthnLockSwitchMode(mode){
+  App.webauthnLock.mode = mode;
+  App.webauthnLock.error = null;
+  refreshWebauthnLockOverlay();
+  if(mode==='password' && typeof ensureCloudInit==='function'){
+    // Előkészítjük a Firebase Auth-ot, hogy submitkor lehetőleg már
+    // rendelkezésre álljon fbAuth.currentUser (ld. webauthnLockSubmitPassword()).
+    ensureCloudInit();
+  }
+}
+async function webauthnLockTryBiometric(){
+  const st = App.webauthnLock;
+  st.busy = true; st.error = null; refreshWebauthnLockOverlay();
+  try{
+    const enrolledUid = localStorage.getItem(WEBAUTHN_ENROLLED_UID_KEY);
+    const credId = webauthnCredIdForUid(enrolledUid);
+    if(!credId) throw new Error('Nincs ezen az eszközön tárolt ujjlenyomat-regisztráció.');
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const assertion = await navigator.credentials.get({
+      publicKey:{
+        challenge,
+        allowCredentials:[{ id: webauthnBase64UrlToBuf(credId), type:'public-key' }],
+        userVerification:'required',
+        timeout:60000,
+      }
+    });
+    if(!assertion) throw new Error('Nem érkezett feloldási válasz.');
+    // A promise sikeres feloldása MAGA a jel (ld. a szekció fejlécében lévő
+    // biztonsági keretezést) - nincs itt semmilyen aláírás-ellenőrzés, a
+    // Firebase-munkamenet már úgyis a Phase A LOCAL persistence-ének
+    // köszönhetően aktív.
+    st.busy = false;
+    webauthnLockHide();
+  }catch(e){
+    console.warn('MotivApp: WebAuthn feloldási kísérlet sikertelen/megszakítva.', e);
+    st.busy = false;
+    st.error = 'Nem sikerült az ujjlenyomatos azonosítás, próbáld újra, vagy használd a jelszót.';
+    refreshWebauthnLockOverlay();
+  }
+}
+async function webauthnLockSubmitPassword(){
+  const st = App.webauthnLock;
+  const emailEl = document.getElementById('webauthn-lock-email');
+  const passEl = document.getElementById('webauthn-lock-password');
+  const email = (emailEl && emailEl.value || '').trim();
+  const password = (passEl && passEl.value) || '';
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
+    st.error = 'Adj meg egy érvényes e-mail címet.';
+    refreshWebauthnLockOverlay();
+    return;
+  }
+  if(!password){
+    st.error = 'Add meg a jelszavad.';
+    refreshWebauthnLockOverlay();
+    return;
+  }
+  st.busy = true; st.error = null; refreshWebauthnLockOverlay();
+  if(typeof ensureCloudInit==='function') ensureCloudInit();
+  // fbAuth/fbAvailable betöltése (SDK-szkriptek) aszinkron, ld. ensureCloudInit()
+  // doksiját - rövid ideig, türelmesen várunk rá ahelyett, hogy azonnal
+  // hibát mutatnánk, amíg épp folyamatban van.
+  let waited = 0;
+  while((_fbInitInFlight || (!_fbInitAttempted && !fbAvailable)) && waited < 8000){
+    await new Promise(r=>setTimeout(r, 150));
+    waited += 150;
+  }
+  if(!fbAvailable || !fbAuth){
+    st.busy = false;
+    st.error = 'A jelszavas feloldás jelenleg nem elérhető (nincs internetkapcsolat, vagy a szolgáltatás nem tölthető be). Próbáld meg az ujjlenyomatot, vagy próbáld újra később.';
+    refreshWebauthnLockOverlay();
+    return;
+  }
+  // fbAuth.currentUser (a LOCAL persistence-ből visszaálló munkamenet) SZINTÉN
+  // aszinkron módon áll csak vissza - erre is türelmesen várunk, mielőtt
+  // hibát mutatnánk, ld. a Phase B brief idevágó megjegyzését.
+  waited = 0;
+  while(!fbAuth.currentUser && waited < 5000){
+    await new Promise(r=>setTimeout(r, 150));
+    waited += 150;
+  }
+  if(!fbAuth.currentUser){
+    st.busy = false;
+    st.error = 'A munkamenet előkészítése még folyamatban van, próbáld újra pár másodperc múlva.';
+    refreshWebauthnLockOverlay();
+    return;
+  }
+  try{
+    // Ez a lépés VALÓDI szerver-oldali ellenőrzést végez a Firebase Auth
+    // ellen - ez a funkció tényleges biztonsági hátsó védelmi vonala
+    // (ld. a szekció fejlécének biztonsági keretezését).
+    const cred = firebase.auth.EmailAuthProvider.credential(email, password);
+    await fbAuth.currentUser.reauthenticateWithCredential(cred);
+    st.busy = false;
+    webauthnLockHide();
+  }catch(e){
+    st.busy = false;
+    st.error = cloudAuthErrorMessage(e); // ugyanaz a magyar hibatérkép, mint a normál bejelentkező formnál
+    refreshWebauthnLockOverlay();
+  }
+}
 
 
 /* ===== FÁJLBA MENTÉS/BETÖLTÉS (File System Access API, opcionális) =====
@@ -5803,6 +6147,10 @@ RENDERERS.settings = function(){
   // doksiját - ez SOSEM fut le automatikusan a runRegressionChecks() CI-futás
   // alatt, mivel az sosem nyitja meg ezt a nézetet.
   if(typeof ensureCloudInit==='function') ensureCloudInit();
+  // Ujjlenyomatos gyorsbelépés feature-detect - ugyanígy idempotens, csak az
+  // első hívás indít tényleges (aszinkron) ellenőrzést, ld. a "HELYI
+  // UJJLENYOMATOS GYORSBELÉPÉS" szekció doksiját.
+  if(typeof ensureWebauthnAvailabilityCheck==='function') ensureWebauthnAvailabilityCheck();
   document.getElementById('view-settings').innerHTML = subHeader('Beállítások') + `
     <div class="sectiontitle">MotivAI jogosultságok</div>
     <div class="card">
@@ -8071,6 +8419,17 @@ window.runRegressionChecks = runRegressionChecks;
 (async function init(){
   await loadState();
   renderApp();
+  // Helyi ujjlenyomatos zárolás (WebAuthn) - MIELŐTT a Firebase Auth
+  // állapota egyáltalán visszaállna, egy OLCSÓ, csak localStorage-ot olvasó
+  // döntéssel (ld. webauthnLockShouldShow()) eldöntjük, kell-e azonnal
+  // eltakarnunk a (renderApp() által már felépített, de a felhasználó által
+  // még nem látott) app-tartalmat egy zároló overlay-jel. Ez SZÁNDÉKOSAN
+  // NEM blokkolja a lenti renderApp()/ensureCloudInit() sort - az app
+  // alatta rendben felépül, csak az overlay takarja, amíg a felhasználó fel
+  // nem oldja (ld. a "HELYI UJJLENYOMATOS GYORSBELÉPÉS" szekció doksiját).
+  try{
+    if(typeof webauthnLockShouldShow==='function' && webauthnLockShouldShow()) webauthnLockShow();
+  }catch(e){ console.warn('MotivApp: ujjlenyomatos zárolás induló ellenőrzése sikertelen.', e); }
   // Fiók és felhő szinkronizáció (Firebase) - CSAK akkor indítjuk el itt,
   // induláskor, ha ez az eszköz korábban már be volt jelentkezve (ld.
   // CLOUD_LOGIN_FLAG_KEY), hogy a "bejelentkezve maradok" élmény
