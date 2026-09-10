@@ -374,12 +374,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.21';
+const APP_VERSION = '2.2.22';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.21';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.22';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -5864,8 +5864,11 @@ function manageDiscretionarySheet(id){
   const idx=App.state.finance.discretionary.findIndex(i=>i.id===id);
   const len=App.state.finance.discretionary.length;
   openSheet(`<div class="sheet-head"><div class="sheet-title">${escapeHtml(x.name)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+    <div class="field"><label>Megnevezés</label><input type="text" id="dc-edit-name" value="${escapeHtml(x.name)}"></div>
+    <div class="field"><label>Ikon (emoji)</label><input type="text" id="dc-edit-icon" value="${escapeHtml(x.icon||'🛍️')}" maxlength="16" style="width:70px;font-size:20px;text-align:center;"></div>
+    <div class="field"><label>Havi keret / cél összeg (Ft)</label><input type="number" id="dc-edit-limit" min="0" value="${x.limit||0}"></div>
     <div class="field"><label>Eddig elköltött összeg (Ft)</label><input type="number" id="dc-edit-spent" min="0" value="${x.spent||0}" style="font-size:20px;text-align:center;padding:16px;"></div>
-    <button class="btn btn-primary btn-block" onclick="saveDiscretionarySpentAmount('${id}')">Mentés</button>
+    <button class="btn btn-primary btn-block" onclick="saveDiscretionaryEdits('${id}')">Mentés</button>
     <div class="hr"></div>
     <div class="flex gap8" style="margin-top:10px;">
       <button class="btn btn-ghost btn-sm" style="flex:1;${idx===0?'opacity:0.35;cursor:not-allowed;':''}" ${idx===0?'disabled':''} onclick="moveFinanceItem('discretionary','${id}',-1);closeSheet();">⬆️ Feljebb</button>
@@ -5873,20 +5876,28 @@ function manageDiscretionarySheet(id){
     </div>
     <button class="btn btn-danger btn-sm btn-block" style="margin-top:8px;" onclick="removeFinanceItem('discretionary','${id}');closeSheet();">🗑️ Törlés</button>`);
 }
-/* saveDiscretionarySpentAmount: az "Egyéb kategóriák" (discretionary) elköltött
-   összege eddig csak NÖVELHETŐ volt (logSpendSheet()/saveSpend(), illetve a banki/
-   Foodora értesítés-lapok) - egyszer rögzítve semmilyen módon nem volt
-   csökkenthető/nullázható, sem kézzel, sem a MotivAI chaten át (a helyi parser nem
-   ismeri fel az ilyen "nullázd le" jellegű kéréseket, az AI-chat pedig csak ÚJ
-   költést tud felvenni, meglévőt nem tud módosítani). Ez a kötelező tételeknél már
-   meglévő editMandatorySheet()/saveMandatoryAmount() mintáját követi: közvetlenül
-   beállítja (nem hozzáadja) az elköltött összeget, tetszőleges értékre, 0-t is
-   beleértve. */
-function saveDiscretionarySpentAmount(id){
+/* saveDiscretionaryEdits: az "Egyéb kategóriák" (discretionary) tétele eddig
+   csak a nézet sorrendjében volt mozgatható/törölhető, az elköltött összeg
+   pedig csak NÖVELHETŐ volt (logSpendSheet()/saveSpend(), illetve a banki/
+   Foodora értesítés-lapok) - sem a megnevezés, sem az ikon, sem a havi keret
+   (cél összeg) nem volt utólag módosítható, csak létrehozáskor (ld.
+   addDiscretionarySheet()/saveDiscretionary()). Ez a kötelező tételeknél már
+   meglévő editMandatorySheet()/saveMandatoryAmount() mintáját követi:
+   közvetlenül beállítja (nem hozzáadja) az egyes mezőket, tetszőleges
+   értékre - az elköltött összegnél 0-t is beleértve. */
+function saveDiscretionaryEdits(id){
   const x=App.state.finance.discretionary.find(i=>i.id===id); if(!x) return;
-  const v=parseFloat(document.getElementById('dc-edit-spent').value)||0;
-  if(v<0){ toast('Az érték nem lehet negatív'); return; }
-  x.spent=v;
+  const name=(document.getElementById('dc-edit-name').value||'').trim();
+  if(!name){ toast('Adj meg egy nevet'); return; }
+  const icon=(document.getElementById('dc-edit-icon').value||'').trim();
+  const limit=parseFloat(document.getElementById('dc-edit-limit').value)||0;
+  if(limit<0){ toast('A keret nem lehet negatív'); return; }
+  const spent=parseFloat(document.getElementById('dc-edit-spent').value)||0;
+  if(spent<0){ toast('Az elköltött összeg nem lehet negatív'); return; }
+  x.name=name;
+  x.icon=icon||'🛍️';
+  x.limit=limit;
+  x.spent=spent;
   saveState(); closeSheet(); toast('Mentve'); RENDERERS.finance();
 }
 function addSavingsSheet(){
