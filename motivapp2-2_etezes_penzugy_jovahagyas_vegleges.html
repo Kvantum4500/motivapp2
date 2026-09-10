@@ -374,12 +374,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.23';
+const APP_VERSION = '2.2.24';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.23';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.24';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -732,20 +732,34 @@ const firebaseConfig = {
 
 let fbAuth = null, fbDb = null, fbAvailable = false;
 
-/* CLOUD_DEVICE_ID: eszközönként stabil, véletlen azonosító (localStorage-ban
-   perzisztálva), amivel a Firestore-ba írt dokumentumon megjelöljük, MELYIK
-   eszköz írta legutóbb - ez teszi lehetővé, hogy a saját írásunk szerver
+/* CLOUD_DEVICE_ID: amivel a Firestore-ba írt dokumentumon megjelöljük, MELYIK
+   munkamenet írta legutóbb - ez teszi lehetővé, hogy a saját írásunk szerver
    által visszaigazolt onSnapshot-eseményét felismerjük és NE alkalmazzuk
-   újra (ld. attachCloudSnapshotListener). */
+   újra (ld. attachCloudSnapshotListener).
+   Egy stabil, localStorage-ban perzisztált ESZKÖZ-alap (motivapp2:deviceId)
+   + egy csak MEMÓRIÁBAN élő, oldalbetöltésenkénti véletlen utótag
+   kombinációja. Az utótag azért kell, mert a localStorage egy origin MINDEN
+   egyidejűleg nyitva lévő tabján/ablakán OSZTOZIK - ez az app pedig
+   egyszerre PWA ÉS TWA-csomagolt (ugyanaz az origin), tehát egy telefonon
+   simán lehet egyszerre nyitva egy böngésző-tab ÉS a telepített app is.
+   Ha csak az eszköz-alap azonosítót használnánk, az egyik munkamenet írását
+   a másik "saját visszhangjának" nézné, és egy VALÓDI, másik tabból érkező
+   változást csendben eldobna. Az utótag nem perzisztált, tehát egy
+   újratöltés után úgyis a friss onFbAuthStateChanged()-beli .get() lekérés
+   dönt (nem az onSnapshot visszhang-felismerés) - ez a változás így az
+   oldalbetöltések közötti viselkedést nem érinti, csak az EGYIDEJŰLEG nyitva
+   lévő munkameneteket különbözteti meg egymástól. */
 const CLOUD_DEVICE_ID = (function(){
+  let base;
   try{
-    let id = localStorage.getItem('motivapp2:deviceId');
-    if(!id){
-      id = (window.crypto && typeof window.crypto.randomUUID === 'function') ? crypto.randomUUID() : (uid()+uid());
-      localStorage.setItem('motivapp2:deviceId', id);
+    base = localStorage.getItem('motivapp2:deviceId');
+    if(!base){
+      base = (window.crypto && typeof window.crypto.randomUUID === 'function') ? crypto.randomUUID() : (uid()+uid());
+      localStorage.setItem('motivapp2:deviceId', base);
     }
-    return id;
-  }catch(e){ return uid()+uid(); }
+  }catch(e){ base = uid()+uid(); }
+  const tabSuffix = (window.crypto && typeof window.crypto.randomUUID === 'function') ? crypto.randomUUID().slice(0,8) : String(Math.random()).slice(2,10);
+  return base+':'+tabSuffix;
 })();
 
 let _lastSyncedStateJson = null; // a legutóbb elküldött VAGY beérkezett állapot tartalmi ujjlenyomata
@@ -860,11 +874,48 @@ function isLocalStateTrivial(){
   for(const k of nonEmptyArrays){ if(Array.isArray(s[k]) && s[k].length) return false; }
   if(s.finance && s.finance.monthlyIncome) return false;
   if(s.finance && Array.isArray(s.finance.foodOrders) && s.finance.foodOrders.length) return false;
+  /* Korábban ez az ellenőrzés NEM nézte a kötelező/egyéb kiadás/megtakarítás
+     tételeket (finance.mandatory/discretionary/savings) - egy felhasználó,
+     aki KIZÁRÓLAG ezeket szabta testre (átnevezett egy kategóriát, valódi
+     keretet/célösszeget állított be, vagy elköltött/félretett összeget
+     rögzített a #60/#61 szerkesztő lapokon anélkül, hogy feladatot/eseményt/
+     edzést stb. is felvett volna) "trivial"-nak (biztonságosan felülírhatónak)
+     tűnt - a meglévő felhő-adat ekkor CSENDBEN, megerősítés nélkül felülírta
+     a testre szabását (ld. onFbAuthStateChanged). Az alapértelmezett
+     tételekhez (defaultState()) képesti BÁRMILYEN eltérés (átnevezés, keret/
+     célösszeg módosítás, elköltött/félretett összeg, hozzáadott/törölt tétel,
+     sorrend) mostantól nem-triviálisnak számít. */
+  const d0 = defaultState();
+  if(s.finance){
+    if(JSON.stringify(s.finance.mandatory||[]) !== JSON.stringify(d0.finance.mandatory)) return false;
+    if(JSON.stringify(s.finance.discretionary||[]) !== JSON.stringify(d0.finance.discretionary)) return false;
+    if(JSON.stringify(s.finance.savings||[]) !== JSON.stringify(d0.finance.savings)) return false;
+  }
   if(s.rpg && s.rpg.meta && s.rpg.meta.name) return false;
   if(s.rpg && Array.isArray(s.rpg.weeks) && s.rpg.weeks.some(w=>w && Array.isArray(w.quests) && w.quests.length)) return false;
   if(s.skills && Object.values(s.skills).some(v=>v)) return false;
   if(s.nutrition && Array.isArray(s.nutrition.log) && s.nutrition.log.length) return false;
   return true;
+}
+
+/* normalizedCloudStateJson(): visszaadja, MI lenne az eredmény, ha egy adott
+   Firestore-dokumentumot alkalmaznánk applyCloudData()-val (ugyanaz a
+   defaultState()+normalizeAppState() lépés), tényleges alkalmazás/mellékhatás
+   NÉLKÜL - App.state-et ideiglenesen kicseréli, majd visszaállítja. Ezt
+   használja onFbAuthStateChanged() annak eldöntésére, hogy a helyi állapot
+   TARTALMILAG megegyezik-e már a felhővel (ld. lentebb a "már szinkronban
+   vagyunk" ágat) - JS egyszálú, szinkron végrehajtású, ezért ez a csere/
+   visszaállítás biztonságos, nem szakíthatja meg semmi. */
+function normalizedCloudStateJson(cloudData){
+  const clone = Object.assign({}, cloudData);
+  delete clone.updatedAt;
+  delete clone._lastWriterDevice;
+  const backup = App.state;
+  App.state = Object.assign(defaultState(), clone);
+  normalizeAppState();
+  const json = JSON.stringify(App.state);
+  App.state = backup;
+  return json;
 }
 
 async function onFbAuthStateChanged(user){
@@ -900,7 +951,24 @@ async function onFbAuthStateChanged(user){
       }
     } else {
       const cloudData = snap.data();
-      if(isLocalStateTrivial()){
+      /* "Már szinkronban vagyunk" gyors-út: korábban EZ az ellenőrzés
+         hiányzott, ezért egy már szinkronizált eszköz MINDEN egyes
+         újratöltése/visszatérése (nem csak egy valódi új bejelentkezés/új
+         eszköz) is lefuttatta a trivial/nem-trivial döntést, és egy
+         visszatérő, érdemi adattal rendelkező felhasználónál MINDIG az
+         "ütköző adatok" sheet-et dobta fel - még akkor is, ha a helyi és a
+         felhő-állapot ténylegesen megegyezett. Ez feleslegesen szoktatta a
+         felhasználót arra, hogy reflexből a "Felhő adatok betöltése (helyi
+         felülírása)" gombra kattintson - pont akkor téve ezt veszélyessé
+         megszokásból, amikor egyszer tényleg lett volna mentendő, egyedi
+         helyi változás. Ha a normalizált tartalom megegyezik, nincs teendő:
+         se prompt, se újraalkalmazás, csak a szinkron-állapot frissül. */
+      const localJson = JSON.stringify(App.state);
+      if(localJson === normalizedCloudStateJson(cloudData)){
+        _lastSyncedStateJson = localJson;
+        App.cloud.status = 'synced';
+        App.cloud.lastSyncAt = new Date();
+      } else if(isLocalStateTrivial()){
         applyCloudData(cloudData);
       } else {
         App.cloud.conflictPending = true;
@@ -1087,11 +1155,32 @@ async function cloudSubmitAuth(){
   App.cloud.authBusy = false;
   refreshCloudSection();
 }
-function cloudSignOut(){
+/* cloudSignOut(): kijelentkezéskor a HELYI App.state-et is vissza kell
+   állítani defaultState()-re - enélkül egy közös/kölcsönzött eszközön
+   (pl. családi telefon) az "A" fiók kijelentkezése után, ha "B" fiók
+   jelentkezik be UGYANOTT (oldal-újratöltés nélkül), "B" az "A" még
+   mindig App.state-ben lévő NAPLÓJÁT/PÉNZÜGYEIT látta volna a saját
+   döntése (migráció/ütközés sheet) ELŐTT is megjelenítve, és "B" "Igen,
+   feltöltöm" választása esetén "A" magánadatai véglegesen bekerültek
+   volna "B" felhő-dokumentumába. A sorrend fontos: ELŐSZÖR fejezze be a
+   tényleges Firebase kijelentkezést (await), és CSAK UTÁNA nullázzuk/
+   mentsük a helyi állapotot - ha fordítva tennénk, a saveState() által
+   kiváltott queueCloudPush() még a RÉGI (épp kijelentkező) fiók
+   currentUser-ét látva a kiürült defaultState()-et pusholná fel "A"
+   valódi felhő-dokumentumába, VÉGLEGESEN törölve "A" szinkronizált
+   adatait. A signOut() Promise-a garantáltan csak azután oldódik fel,
+   hogy a Firebase SDK a currentUser-t már nullázta, ezért ez a sorrend
+   biztonságos. */
+async function cloudSignOut(){
+  clearTimeout(_cloudPushTimer);
+  if(App.cloud.unsub){ try{ App.cloud.unsub(); }catch(e){ /* no-op */ } App.cloud.unsub = null; }
   if(fbAuth){
-    fbAuth.signOut().catch(e=>console.warn('MotivApp: kijelentkezés sikertelen.', e));
+    try{ await fbAuth.signOut(); }catch(e){ console.warn('MotivApp: kijelentkezés sikertelen.', e); }
   }
   if(typeof webauthnClearEnrollmentFlagOnSignOut==='function') webauthnClearEnrollmentFlagOnSignOut();
+  App.state = defaultState();
+  saveState();
+  renderApp();
 }
 function cloudSyncStatusText(){
   const c = App.cloud;
@@ -5898,6 +5987,7 @@ function saveDiscretionaryEdits(id){
   x.icon=icon||'🛍️';
   x.limit=limit;
   x.spent=spent;
+  checkDiscretionaryUnderBudget(x); // parity a saveSavingsEdits() checkSavingsGoalMilestone()-hívásával
   saveState(); closeSheet(); toast('Mentve'); RENDERERS.finance();
 }
 function addSavingsSheet(){
