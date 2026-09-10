@@ -1,0 +1,29 @@
+rules_version = '2';
+
+// MotivApp2 - Firestore Security Rules a "Fiók és szinkronizáció" (Phase A,
+// Firebase compat SDK) funkcióhoz.
+//
+// EZ A FÁJL DOKUMENTÁCIÓS/VERZIÓKÖVETÉSI CÉLT SZOLGÁL - a repóban dolgozó
+// ágensnek/CI-nak NINCS Firebase CLI hitelesítése, ezért ezt NEM lehet
+// innen automatikusan telepíteni. A projekt adminjának KÉZZEL kell
+// beillesztenie a Firebase konzol Firestore Database -> Rules fülén
+// (projekt: motivapp2-sync), majd Publish.
+//
+// Adatmodell: egyetlen dokumentum felhasználónként, users/{userId}, a
+// TELJES App.state blob + updatedAt (serverTimestamp) + _lastWriterDevice
+// mezőkkel (ld. index.html "FIÓK ÉS FELHŐ SZINKRONIZÁCIÓ" szekció).
+//
+// Szabály: egy adott users/{userId} dokumentumot KIZÁRÓLAG a request.auth.uid
+// == userId hitelesített felhasználó olvashatja/írhatja - mindenki más
+// (bejelentkezetlen vagy más fiókú felhasználó) számára tiltott. Minden egyéb
+// útvonal (bármilyen más gyűjtemény/dokumentum) alapértelmezetten tiltott.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
