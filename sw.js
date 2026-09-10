@@ -1,15 +1,21 @@
 /* MotivApp 2.0 — service worker
    Cél: az app teljesen offline is működjön az első sikeres betöltés után.
-   Az app egyetlen, önmagában álló HTML fájl (nincs külső CDN/font-hívás),
-   ezért elég ezt a néhány fájlt gyorsítótárazni ahhoz, hogy internet
-   nélkül is teljes értékűen elinduljon és működjön (a MotivAI-chat
-   kivételével, ami értelemszerűen hálózatot igényel).
+   Az app maga egyetlen, önmagában álló HTML fájl - az APP_SHELL lista ezt
+   és a hozzá tartozó helyi (ugyanerről az origin-ről szolgált) statikus
+   fájlokat gyorsítótárazza, hogy internet nélkül is teljes értékűen
+   elinduljon és működjön (a MotivAI-chat, és az OPCIONÁLIS Fiók és
+   szinkronizáció Firebase-hívásai kivételével, amik értelemszerűen
+   hálózatot igényelnek - ezek hiánya nem akadályozza az app többi részét).
+   A lenti hálózat-elsőbbségi fetch handler a Firebase CDN (gstatic.com)
+   szkripteket is átengedi/gyorsítótárazza ugyanezzel a network-first
+   stratégiával, de ezek nincsenek az APP_SHELL install-listán, mert nem
+   előfeltételei a telepítésnek/induló betöltésnek.
 
    Verziófrissítésnél a CACHE_NAME-et emeld (pl. a fő fájl APP_VERSION-jét
    követve) — ez kényszeríti ki, hogy a böngésző/TWA letöltse az új
    verziót, és a régi cache-t eldobja.
 */
-const CACHE_NAME = 'motivapp-cache-v2.2.19';
+const CACHE_NAME = 'motivapp-cache-v2.2.20';
 const APP_SHELL = [
   './index.html',
   './motivapp2-2_etezes_penzugy_jovahagyas_vegleges.html',

@@ -341,15 +341,30 @@ a{color:inherit;}
   <div id="toast" role="status" aria-live="polite"></div>
 </div>
 
+<!-- Firebase COMPAT SDK: SZÁNDÉKOSAN NINCS itt statikus <script src> tag rá.
+     Az OPCIONÁLIS "Fiók és szinkronizáció" funkció (ld. a fő script "FIÓK ÉS
+     FELHŐ SZINKRONIZÁCIÓ" szekcióját) csak IGÉNY SZERINT, dinamikusan tölti
+     be ugyanezeket a compat CDN script-eket (loadFirebaseSdkScripts()) -
+     amikor a felhasználó megnyitja a Beállítások "Fiók és szinkronizáció"
+     részét, vagy induláskor, ha az eszközön korábban már bejelentkezett
+     (ld. CLOUD_LOGIN_FLAG_KEY). Ennek oka: egy sikertelen hálózati
+     erőforrás-betöltést a böngésző MAGA logol console hibaként, amit
+     semmilyen JS try/catch nem tud elnyomni - ha ez statikus tag-ekkel
+     MINDEN oldalbetöltéskor megtörténne, feleslegesen buktathatná el a
+     runRegressionChecks() CI-futtatását bármilyen hálózat/Firebase-elérési
+     korlátozás esetén, holott az app minden funkciója fiók nélkül is
+     változatlanul, hibátlanul működik. NINCS firebase.analytics() betöltve
+     (nem kell ehhez a funkcióhoz, felesleges extra script/függőség). -->
+
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.19';
+const APP_VERSION = '2.2.20';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.19';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.20';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -514,6 +529,24 @@ function defaultState(){
 }
 
 let App = { state:null, ui:{tab:'ma',tovabbView:'menu',fejlView:'body',terkepView:'track',scheduleTopView:'naptar',selectedMuscle:null,tracking:false,watchId:null,trackPoints:[],trackStart:null,mapObj:null,mapLayer:null,rpgTab:'dashboard',rpgViewingWeek:null,rpgOpenAccordion:null,rpgFocusMode:false} };
+/* App.cloud: a Fiók és szinkronizáció (Firebase) funkció FUTÁSIDEJŰ állapota.
+   SZÁNDÉKOSAN nincs az App.state-ben - ez nem perzisztálandó/nem a
+   felhőbe mentendő adat, csak UI/kapcsolat-állapot, ld. a fájl végén a
+   "FIÓK ÉS FELHŐ SZINKRONIZÁCIÓ" szekciót. */
+App.cloud = {
+  user:null,            // {uid,email} vagy null, ha kijelentkezve
+  status:'idle',         // 'idle'|'syncing'|'synced'|'offline'|'error'
+  lastSyncAt:null,       // Date, utolsó szerver által visszaigazolt írás/olvasás
+  error:null,
+  unsub:null,            // onSnapshot leiratkozó függvény
+  authMode:'login',      // 'login'|'register' - a bejelentkező kártya aktív füle
+  authError:null,
+  authBusy:false,
+  formEmail:'',
+  migrationPending:false, // igaz, ha új fiók + van helyi adat -> a user még nem döntött a feltöltésről
+  conflictPending:false,  // igaz, ha van felhő ÉS helyi adat is -> a user még nem döntött, melyiket tartsa meg
+  pendingCloudData:null,  // a conflictPending alatt a lekért (de még nem alkalmazott) felhő-dokumentum
+};
 
 /* ===== ROBUSZTUS HELYI TÁROLÁS =====
    A korábbi verzió window.storage-ra támaszkodott, ami letöltött HTML-ként
@@ -535,40 +568,51 @@ const storageAdapter = {
   }
 };
 
+/* normalizeAppState(): a betöltött/beérkezett App.state-en (feltéve, hogy
+   már defaultState()-tel Object.assign-olt alap) elvégzi a régi/hiányzó
+   mezők biztonságos pótlását. Eredetileg a loadState() törzsébe volt égetve
+   - ide lett kiemelve, hogy a felhőből (Firestore) érkező állapot
+   alkalmazása (ld. applyCloudData() a FIÓK ÉS FELHŐ SZINKRONIZÁCIÓ
+   szekcióban) ugyanazt a pótlási logikát tudja újrahasználni, mint a
+   helyi betöltés - így a két forrásból (localStorage / Firestore) érkező
+   állapot azonos módon lesz normalizálva. */
+function normalizeAppState(){
+  if(!App.state.finance || !Array.isArray(App.state.finance.mandatory)){
+    const oldIncome = (App.state.finance && App.state.finance.monthlyIncome) || 0;
+    App.state.finance = defaultState().finance;
+    App.state.finance.monthlyIncome = oldIncome;
+  }
+  /* Régi/hiányzó tömbök biztonságos pótlása */
+  const d = defaultState();
+  for(const k of ['tasks','events','workouts','weightLog','healthLog','journeys','journal','aiChat']){
+    if(!Array.isArray(App.state[k])) App.state[k] = d[k];
+  }
+  if(!Array.isArray(App.state.finance.foodOrders)) App.state.finance.foodOrders = d.finance.foodOrders;
+  if(!Array.isArray(App.state.finance.spendLedger)) App.state.finance.spendLedger = d.finance.spendLedger;
+  if(!App.state.skills || typeof App.state.skills !== 'object') App.state.skills = {};
+  if(!App.state.aiPerm || typeof App.state.aiPerm !== 'object') App.state.aiPerm = d.aiPerm;
+  if(!App.state.healthConnect || typeof App.state.healthConnect !== 'object') App.state.healthConnect = d.healthConnect;
+  if(!App.state.rpg || typeof App.state.rpg !== 'object') App.state.rpg = d.rpg;
+  if(!App.state.rpg.meta || typeof App.state.rpg.meta !== 'object') App.state.rpg.meta = d.rpg.meta;
+  if(!Array.isArray(App.state.rpg.weeks)) App.state.rpg.weeks = d.rpg.weeks;
+  rpgMigrateToCycleWeeks(App.state.rpg, App.state.schedule && App.state.schedule.pattern);
+  if(App.state.rpg.weeks.length !== (App.state.rpg.meta.weeksTotal||52)) App.state.rpg.weeks = Array.from({length:(App.state.rpg.meta.weeksTotal||52)}, ()=>({quests:[]}));
+  App.state.rpg.weeks = App.state.rpg.weeks.map(w=> (w && Array.isArray(w.quests)) ? w : {quests:[]});
+  if(!Array.isArray(App.state.rpg.quarterReflections) || App.state.rpg.quarterReflections.length !== 4) App.state.rpg.quarterReflections = ['','','',''];
+  if(!Array.isArray(App.state.rpg.favorites)) App.state.rpg.favorites = [];
+  if(!Array.isArray(App.state.rpg.bossNotified)) App.state.rpg.bossNotified = [];
+  if(!Array.isArray(App.state.rpg.cycleSummaryNotified)) App.state.rpg.cycleSummaryNotified = [];
+  if(!Array.isArray(App.state.rpg.workoutStreakQuestSuggestedDates)) App.state.rpg.workoutStreakQuestSuggestedDates = [];
+  if(typeof App.state.rpg.onboarded !== 'boolean') App.state.rpg.onboarded = false;
+  if(!App.state.cycleCoach || typeof App.state.cycleCoach !== 'object') App.state.cycleCoach = d.cycleCoach;
+}
 async function loadState(){
   try{
     const res = await storageAdapter.get(STORAGE_KEY);
     if(res && res.value){
       const parsed = JSON.parse(res.value);
       App.state = Object.assign(defaultState(), parsed);
-      if(!App.state.finance || !Array.isArray(App.state.finance.mandatory)){
-        const oldIncome = (App.state.finance && App.state.finance.monthlyIncome) || 0;
-        App.state.finance = defaultState().finance;
-        App.state.finance.monthlyIncome = oldIncome;
-      }
-      /* Régi/hiányzó tömbök biztonságos pótlása */
-      const d = defaultState();
-      for(const k of ['tasks','events','workouts','weightLog','healthLog','journeys','journal','aiChat']){
-        if(!Array.isArray(App.state[k])) App.state[k] = d[k];
-      }
-      if(!Array.isArray(App.state.finance.foodOrders)) App.state.finance.foodOrders = d.finance.foodOrders;
-      if(!Array.isArray(App.state.finance.spendLedger)) App.state.finance.spendLedger = d.finance.spendLedger;
-      if(!App.state.skills || typeof App.state.skills !== 'object') App.state.skills = {};
-      if(!App.state.aiPerm || typeof App.state.aiPerm !== 'object') App.state.aiPerm = d.aiPerm;
-      if(!App.state.healthConnect || typeof App.state.healthConnect !== 'object') App.state.healthConnect = d.healthConnect;
-      if(!App.state.rpg || typeof App.state.rpg !== 'object') App.state.rpg = d.rpg;
-      if(!App.state.rpg.meta || typeof App.state.rpg.meta !== 'object') App.state.rpg.meta = d.rpg.meta;
-      if(!Array.isArray(App.state.rpg.weeks)) App.state.rpg.weeks = d.rpg.weeks;
-      rpgMigrateToCycleWeeks(App.state.rpg, App.state.schedule && App.state.schedule.pattern);
-      if(App.state.rpg.weeks.length !== (App.state.rpg.meta.weeksTotal||52)) App.state.rpg.weeks = Array.from({length:(App.state.rpg.meta.weeksTotal||52)}, ()=>({quests:[]}));
-      App.state.rpg.weeks = App.state.rpg.weeks.map(w=> (w && Array.isArray(w.quests)) ? w : {quests:[]});
-      if(!Array.isArray(App.state.rpg.quarterReflections) || App.state.rpg.quarterReflections.length !== 4) App.state.rpg.quarterReflections = ['','','',''];
-      if(!Array.isArray(App.state.rpg.favorites)) App.state.rpg.favorites = [];
-      if(!Array.isArray(App.state.rpg.bossNotified)) App.state.rpg.bossNotified = [];
-      if(!Array.isArray(App.state.rpg.cycleSummaryNotified)) App.state.rpg.cycleSummaryNotified = [];
-      if(!Array.isArray(App.state.rpg.workoutStreakQuestSuggestedDates)) App.state.rpg.workoutStreakQuestSuggestedDates = [];
-      if(typeof App.state.rpg.onboarded !== 'boolean') App.state.rpg.onboarded = false;
-      if(!App.state.cycleCoach || typeof App.state.cycleCoach !== 'object') App.state.cycleCoach = d.cycleCoach;
+      normalizeAppState();
     } else {
       App.state = defaultState();
     }
@@ -597,12 +641,527 @@ function saveState(){
         if(attempt<2) await new Promise(r=>setTimeout(r, 400*(attempt+1)));
       }
     }
-    if(ok){ _saveFailStreak=0; }
+    if(ok){ _saveFailStreak=0; queueCloudPush(); }
     else{ _saveFailStreak++; }
     const badge = document.getElementById('save-status-badge');
     if(badge) badge.outerHTML = saveStatusBadgeHtml();
   }, 500);
 }
+
+
+/* ================= FIÓK ÉS FELHŐ SZINKRONIZÁCIÓ (Firebase, OPCIONÁLIS) =================
+   Cél: az app MINDEN funkciója (beleértve a runRegressionChecks() önteszt-
+   készletet is) TOVÁBBRA IS teljesen működjön fiók/hálózat NÉLKÜL - ez a
+   szekció csak egy önkéntesen bekapcsolható, kiegészítő réteg a meglévő
+   localStorage-alapú mentés fölött, SOHA nem előfeltétele semminek.
+
+   Felépítés:
+   - Firebase COMPAT SDK - klasszikus, nem-modul script-ek, IGÉNY SZERINT,
+     dinamikusan betöltve (ld. loadFirebaseSdkScripts()/ensureCloudInit()
+     lentebb), hogy a többi kóddal egy szinten, ugyanabban a globális
+     scope-ban éljenek, DE csak akkor próbálkozzon a hálózattal, amikor a
+     felhasználó ténylegesen megnyitja a Beállítások "Fiók és
+     szinkronizáció" részét (vagy induláskor, egy korábban már bejelentkezett
+     eszközön). Ha ezek a CDN hívások elszállnak (nincs internet / a domain
+     nem elérhető), a `firebase` globális egyszerűen nem jön létre - MINDEN
+     itteni függvény ellenőrzi ezt (fbAvailable), és csendben, hibadobás
+     nélkül inaktív
+     marad, az app többi része változatlanul működik.
+   - Auth: e-mail+jelszó regisztráció/bejelentkezés, LOCAL persistence
+     (egyszer bejelentkezve marad, ld. firebase.auth.Auth.Persistence.LOCAL).
+   - Adatmodell: EGY dokumentum felhasználónként, `users/{uid}`, a TELJES
+     App.state blob + updatedAt (serverTimestamp) + _lastWriterDevice (ld.
+     lentebb, a visszaír-hurok elkerüléséhez).
+   - Szinkron: bejelentkezés után valós idejű onSnapshot figyelő a saját
+     dokumentumra; minden sikeres helyi mentés (saveState()) után ~2mp
+     debounce-szal felhőbe tolja a teljes állapotot, HA a user be van
+     jelentkezve és nincs függőben lévő migrációs/ütközési döntés.
+   - Visszaír-hurok elkerülése: NEM az updatedAt időbélyeg-összevetésre
+     támaszkodunk (a serverTimestamp() csak a szerver-kerülő után ismert),
+     hanem (a) egy `_lastSyncedStateJson` tartalmi ujjlenyomatra (ha a
+     bejövő/kimenő állapot megegyezik azzal, amit már ismerünk, nincs
+     teendő), és (b) a dokumentumba írt `_lastWriterDevice` mezőre (ha egy
+     visszaigazolt írás a SAJÁT eszközünktől származik, nem alkalmazzuk
+     újra, csak a szinkron-állapotot frissítjük).
+   - Első bejelentkezés / új eszköz kezelése: SOHA nem ír felül egyik
+     oldalt sem hallgatólagosan - ha van érdemi helyi ÉS/VAGY felhő adat,
+     egy megerősítő sheet kérdezi meg a felhasználót (ld. openCloudMigrationSheet).
+   - Offline: Firestore offline persistence (enablePersistence) - ha ez a
+     böngésző/kontextus nem támogatja (pl. több nyitott tab, vagy a
+     tesztkörnyezet), csendben, hiba nélkül folytatjuk offline persistence
+     nélkül.
+
+   Biztonsági megjegyzés: a lenti firebaseConfig NEM titok - ez egy nyilvános
+   kliens-azonosító (a valódi védelmi vonal a Firestore Security Rules,
+   ld. firebase/firestore.rules a repóban). */
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAppKnvnl2jYq09_v0of0NPQYpdFJlyS0Y",
+  authDomain: "motivapp2-sync.firebaseapp.com",
+  projectId: "motivapp2-sync",
+  storageBucket: "motivapp2-sync.firebasestorage.app",
+  messagingSenderId: "305035888486",
+  appId: "1:305035888486:web:530a69326f7a5ad9606aa7",
+  measurementId: "G-ZDHLNJ9FTL"
+};
+
+let fbAuth = null, fbDb = null, fbAvailable = false;
+
+/* CLOUD_DEVICE_ID: eszközönként stabil, véletlen azonosító (localStorage-ban
+   perzisztálva), amivel a Firestore-ba írt dokumentumon megjelöljük, MELYIK
+   eszköz írta legutóbb - ez teszi lehetővé, hogy a saját írásunk szerver
+   által visszaigazolt onSnapshot-eseményét felismerjük és NE alkalmazzuk
+   újra (ld. attachCloudSnapshotListener). */
+const CLOUD_DEVICE_ID = (function(){
+  try{
+    let id = localStorage.getItem('motivapp2:deviceId');
+    if(!id){
+      id = (window.crypto && typeof window.crypto.randomUUID === 'function') ? crypto.randomUUID() : (uid()+uid());
+      localStorage.setItem('motivapp2:deviceId', id);
+    }
+    return id;
+  }catch(e){ return uid()+uid(); }
+})();
+
+let _lastSyncedStateJson = null; // a legutóbb elküldött VAGY beérkezett állapot tartalmi ujjlenyomata
+let _cloudPushTimer = null;
+const CLOUD_LOGIN_FLAG_KEY = 'motivapp2:cloudLoggedIn';
+const FIREBASE_SDK_URLS = [
+  'https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js',
+  'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js',
+  'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js',
+];
+
+/* loadFirebaseSdkScripts(): a Firebase COMPAT SDK-t SZÁNDÉKOSAN NEM statikus
+   <script src> tag-ekkel töltjük be a <head>-ben, hanem csak IGÉNY SZERINT,
+   dinamikusan - ld. ensureCloudInit() hívási helyeit (Beállítások megnyitása
+   / már bejelentkezett eszköz induláskori újracsatlakozása). Ennek oka: egy
+   sikertelen hálózati erőforrás-betöltés a böngésző MAGA (nem az app kódja)
+   ír egy "Failed to load resource" console hibát, amit semmilyen JS-oldali
+   try/catch nem tud elnyomni - ha ez MINDEN oldalbetöltéskor megtörténne
+   (statikus tag-ekkel), az a runRegressionChecks() CI-futtatását (ld.
+   scripts/ci-regression-check.js) hálózat/Firebase-korlátozás esetén
+   HIBÁSAN buktatná el, annak ellenére, hogy maguk az app-önteszek mind
+   PASS-olnak. Mivel a CI regresszió futtatása (és a felhasználók túlnyomó
+   többsége, aki sosem használja a fiók/szinkron funkciót) SOHA nem nyitja
+   meg a Beállítások "Fiók és szinkronizáció" szekcióját és nincs korábban
+   mentett bejelentkezés-jelző (ld. CLOUD_LOGIN_FLAG_KEY), ez a betöltés a
+   gyakorlatban legtöbbször EGYÁLTALÁN meg sem történik - nulla hálózati
+   kísérlet, nulla kockázat. */
+let _fbSdkLoadPromise = null;
+function loadFirebaseSdkScripts(){
+  if(_fbSdkLoadPromise) return _fbSdkLoadPromise;
+  _fbSdkLoadPromise = new Promise((resolve)=>{
+    if(typeof firebase !== 'undefined'){ resolve(true); return; }
+    let i = 0, anyFailed = false;
+    function loadNext(){
+      if(i >= FIREBASE_SDK_URLS.length){ resolve(!anyFailed); return; }
+      const s = document.createElement('script');
+      s.src = FIREBASE_SDK_URLS[i];
+      s.onload = ()=>{ i++; loadNext(); };
+      s.onerror = ()=>{ anyFailed = true; i++; loadNext(); };
+      document.head.appendChild(s);
+    }
+    loadNext();
+  });
+  return _fbSdkLoadPromise;
+}
+
+let _fbInitAttempted = false, _fbInitInFlight = false;
+/* ensureCloudInit(): idempotens belépési pont - biztonságosan hívható
+   többször is (pl. minden Beállítások-megnyitáskor), csak az ELSŐ hívás
+   indít tényleges betöltést/inicializálást. */
+function ensureCloudInit(){
+  if(_fbInitAttempted || _fbInitInFlight) return;
+  _fbInitInFlight = true;
+  fbInit().finally(()=>{
+    _fbInitInFlight = false;
+    _fbInitAttempted = true;
+    refreshCloudSection();
+  });
+}
+async function fbInit(){
+  let loaded = false;
+  try{
+    loaded = await loadFirebaseSdkScripts();
+  }catch(e){
+    console.warn('MotivApp: Firebase SDK betöltése sikertelen.', e);
+  }
+  if(!loaded || typeof firebase === 'undefined'){
+    console.warn('MotivApp: a Firebase SDK nem töltődött be (nincs internet, vagy a CDN nem elérhető) - a Fiók és szinkronizáció funkció inaktív marad, az app többi része helyben tovább működik.');
+    fbAvailable = false;
+    return;
+  }
+  try{
+    firebase.initializeApp(firebaseConfig);
+    fbAuth = firebase.auth();
+    fbDb = firebase.firestore();
+    fbAvailable = true;
+    fbAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(e=>{
+      console.warn('MotivApp: Firebase Auth LOCAL persistence beállítása sikertelen - a munkamenet böngészőbezáráskor elveszhet.', e);
+    });
+    try{
+      const persistPromise = fbDb.enablePersistence ? fbDb.enablePersistence({synchronizeTabs:true}) : null;
+      if(persistPromise && typeof persistPromise.catch === 'function'){
+        persistPromise.catch(e=>{
+          // 'failed-precondition' = már engedélyezve egy másik nyitott tabon;
+          // 'unimplemented' = a böngésző/kontextus nem támogatja. Mindkettő
+          // várt, ártalmatlan eset - offline persistence nélkül folytatunk.
+          console.warn('MotivApp: Firestore offline persistence nem engedélyezhető ('+(e&&e.code)+') - a szinkron továbbra is működik, csak offline írás-sorbaállítás nélkül.', e);
+        });
+      }
+    }catch(e){
+      console.warn('MotivApp: Firestore offline persistence beállítása közben hiba történt - folytatás nélküle.', e);
+    }
+    fbAuth.onAuthStateChanged(onFbAuthStateChanged, e=>{
+      console.warn('MotivApp: Firebase Auth állapotfigyelő hiba.', e);
+    });
+  }catch(e){
+    console.warn('MotivApp: Firebase inicializálás sikertelen (nincs internet / SDK hiba) - a Fiók és szinkronizáció funkció inaktív marad.', e);
+    fbAvailable = false;
+  }
+}
+
+/* isLocalStateTrivial(): heurisztika arra, hogy ezen az eszközön van-e már
+   ÉRDEMI, elveszíteni nem akart helyi adat, vagy még csak az alapállapot
+   áll fenn (üres profil, nincs feladat/edzés/napló stb.) - ez dönti el,
+   hogy egy felhő-eltérés esetén szükséges-e megkérdezni a felhasználót,
+   vagy biztonságosan, csendben lehet a felhő/helyi oldalt alkalmazni. */
+function isLocalStateTrivial(){
+  const s = App.state;
+  if(!s) return true;
+  if(s.profile && s.profile.name) return false;
+  const nonEmptyArrays = ['tasks','events','workouts','activities','journeys','journal','weightLog','healthLog','customSports','customSkillNodes'];
+  for(const k of nonEmptyArrays){ if(Array.isArray(s[k]) && s[k].length) return false; }
+  if(s.finance && s.finance.monthlyIncome) return false;
+  if(s.finance && Array.isArray(s.finance.foodOrders) && s.finance.foodOrders.length) return false;
+  if(s.rpg && s.rpg.meta && s.rpg.meta.name) return false;
+  if(s.rpg && Array.isArray(s.rpg.weeks) && s.rpg.weeks.some(w=>w && Array.isArray(w.quests) && w.quests.length)) return false;
+  if(s.skills && Object.values(s.skills).some(v=>v)) return false;
+  if(s.nutrition && Array.isArray(s.nutrition.log) && s.nutrition.log.length) return false;
+  return true;
+}
+
+async function onFbAuthStateChanged(user){
+  if(App.cloud.unsub){ try{ App.cloud.unsub(); }catch(e){ /* no-op */ } App.cloud.unsub = null; }
+  if(!user){
+    App.cloud.user = null;
+    App.cloud.status = 'idle';
+    App.cloud.migrationPending = false;
+    App.cloud.conflictPending = false;
+    App.cloud.pendingCloudData = null;
+    _lastSyncedStateJson = null;
+    try{ localStorage.removeItem(CLOUD_LOGIN_FLAG_KEY); }catch(e){ /* no-op */ }
+    refreshCloudSection();
+    return;
+  }
+  // CLOUD_LOGIN_FLAG_KEY: könnyű, saját jelző (NEM a Firebase SDK sajátja) -
+  // ez teszi lehetővé, hogy a jövőbeli oldalbetöltések ensureCloudInit()-en
+  // keresztül TUDJÁK, hogy ezen az eszközön érdemes proaktívan, induláskor
+  // betölteni a Firebase SDK-t (ld. init() a fájl végén), fiók nélküli
+  // eszközökön viszont EGYÁLTALÁN ne próbálkozzanak vele.
+  try{ localStorage.setItem(CLOUD_LOGIN_FLAG_KEY, '1'); }catch(e){ /* no-op */ }
+  App.cloud.user = {uid:user.uid, email:user.email};
+  App.cloud.status = 'syncing';
+  refreshCloudSection();
+  try{
+    const snap = await fbDb.collection('users').doc(user.uid).get();
+    if(!snap.exists){
+      if(isLocalStateTrivial()){
+        await pushLocalToCloud();
+      } else {
+        App.cloud.migrationPending = true;
+        openCloudMigrationSheet('no-cloud');
+      }
+    } else {
+      const cloudData = snap.data();
+      if(isLocalStateTrivial()){
+        applyCloudData(cloudData);
+      } else {
+        App.cloud.conflictPending = true;
+        App.cloud.pendingCloudData = cloudData;
+        openCloudMigrationSheet('conflict');
+      }
+    }
+  }catch(e){
+    // Offline / hálózati hiba - nem crash, csak "offline" állapot jelzés.
+    // A user itt bejelentkezettnek számít (LOCAL persistence), csak a
+    // kezdeti egyeztetés vár a következő kapcsolódásra.
+    console.warn('MotivApp: a felhő-adat kezdeti ellenőrzése sikertelen (valószínűleg offline).', e);
+    App.cloud.status = 'offline';
+  }
+  attachCloudSnapshotListener(user.uid);
+  refreshCloudSection();
+}
+
+function attachCloudSnapshotListener(uidVal){
+  App.cloud.unsub = fbDb.collection('users').doc(uidVal).onSnapshot(snap=>{
+    if(App.cloud.migrationPending || App.cloud.conflictPending) return; // előbb a felhasználónak döntenie kell
+    if(!snap.exists) return;
+    const data = snap.data();
+    if(snap.metadata.hasPendingWrites){
+      // A saját, még szerver által nem igazolt írásunk optimista visszhangja.
+      App.cloud.status = 'syncing';
+      refreshCloudSection();
+      return;
+    }
+    if(data._lastWriterDevice === CLOUD_DEVICE_ID){
+      // A saját írásunk szerver által visszaigazolt verziója - nem kell újra alkalmazni.
+      App.cloud.status = 'synced';
+      App.cloud.lastSyncAt = new Date();
+      App.cloud.error = null;
+      refreshCloudSection();
+      return;
+    }
+    // Másik eszközről érkezett, valódi távoli változás.
+    applyCloudData(data);
+  }, err=>{
+    console.warn('MotivApp: felhő-szinkron figyelő hiba (kapcsolat megszakadt?).', err);
+    App.cloud.status = navigator.onLine ? 'error' : 'offline';
+    App.cloud.error = err && err.message;
+    refreshCloudSection();
+  });
+}
+
+/* applyCloudData(): a Firestore-ból érkező (vagy induló egyeztetéskor
+   lekért) teljes állapot-blobot alkalmazza App.state-re, UGYANAZZAL a
+   normalizáló lépéssel, mint a helyi betöltés (ld. normalizeAppState()),
+   majd elmenti helyben és újrarajzol. A _lastSyncedStateJson frissítése
+   ELŐZI MEG, hogy a nyomában induló saveState() -> queueCloudPush()
+   visszaküldje ugyanezt az adatot a felhőbe (visszaír-hurok elkerülése). */
+function applyCloudData(data){
+  const clone = Object.assign({}, data);
+  delete clone.updatedAt;
+  delete clone._lastWriterDevice;
+  App.state = Object.assign(defaultState(), clone);
+  normalizeAppState();
+  _lastSyncedStateJson = JSON.stringify(App.state);
+  saveState();
+  App.cloud.status = 'synced';
+  App.cloud.lastSyncAt = new Date();
+  App.cloud.error = null;
+  App.cloud.migrationPending = false;
+  App.cloud.conflictPending = false;
+  App.cloud.pendingCloudData = null;
+  renderApp();
+  refreshCloudSection();
+}
+
+/* queueCloudPush(): a saveState() SIKERES helyi mentés ágából hívva (ld.
+   fentebb). Csak akkor ütemez tényleges felhő-írást, ha (a) van
+   bejelentkezett user, (b) nincs függőben migrációs/ütközési döntés, és
+   (c) az App.state ténylegesen eltér attól, amit legutóbb szinkronizáltunk
+   (elküldtünk VAGY beérkezett) - ez zárja ki, hogy egy épp alkalmazott
+   távoli változás visszaírja önmagát a felhőbe. */
+function queueCloudPush(){
+  if(!fbAvailable || !fbAuth || !fbAuth.currentUser || !fbDb) return;
+  if(App.cloud.migrationPending || App.cloud.conflictPending) return;
+  let json;
+  try{ json = JSON.stringify(App.state); }catch(e){ return; }
+  if(json === _lastSyncedStateJson) return;
+  clearTimeout(_cloudPushTimer);
+  _cloudPushTimer = setTimeout(()=>{ pushLocalToCloud(); }, 2000);
+}
+
+async function pushLocalToCloud(){
+  if(!fbAvailable || !fbAuth || !fbAuth.currentUser || !fbDb) return;
+  const uidVal = fbAuth.currentUser.uid;
+  let json;
+  try{ json = JSON.stringify(App.state); }catch(e){ return; }
+  App.cloud.status = 'syncing';
+  refreshCloudSection();
+  try{
+    const payload = Object.assign({}, App.state, {
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      _lastWriterDevice: CLOUD_DEVICE_ID,
+    });
+    _lastSyncedStateJson = json;
+    await fbDb.collection('users').doc(uidVal).set(payload);
+    App.cloud.migrationPending = false;
+    App.cloud.conflictPending = false;
+    App.cloud.error = null;
+    // A "Szinkronizálva" állapot/időbélyeg frissítését az onSnapshot
+    // visszaigazoló ága végzi (data._lastWriterDevice === CLOUD_DEVICE_ID ág) -
+    // amíg offline vagyunk, ott marad "syncing"/"offline", amíg a Firestore
+    // offline persistence a kapcsolat helyreállása után nem véglegesíti az írást.
+  }catch(e){
+    console.warn('MotivApp: felhő-mentés sikertelen (valószínűleg offline vagy jogosultsági hiba) - a helyi adatok megvannak, később újrapróbálja.', e);
+    App.cloud.status = navigator.onLine ? 'error' : 'offline';
+    App.cloud.error = e && e.message;
+    refreshCloudSection();
+  }
+}
+
+/* ---- Bejelentkező/regisztrációs UI (Beállítások -> Fiók és szinkronizáció) ---- */
+function refreshCloudSection(){
+  const el = document.getElementById('cloud-sync-section');
+  if(el) el.outerHTML = `<div id="cloud-sync-section">${cloudSyncSectionHtml()}</div>`;
+}
+function cloudSetAuthMode(mode){
+  App.cloud.authMode = mode;
+  App.cloud.authError = null;
+  refreshCloudSection();
+}
+function cloudAuthErrorMessage(e){
+  const code = e && e.code;
+  const map = {
+    'auth/email-already-in-use':'Ez az e-mail cím már regisztrálva van. Válaszd a Bejelentkezés fület.',
+    'auth/invalid-email':'Érvénytelen e-mail cím formátum.',
+    'auth/weak-password':'A jelszó túl gyenge — legalább 6 karakter szükséges.',
+    'auth/user-not-found':'Nincs ilyen e-mail címmel regisztrált fiók.',
+    'auth/wrong-password':'Hibás jelszó.',
+    'auth/invalid-credential':'Hibás e-mail cím vagy jelszó.',
+    'auth/too-many-requests':'Túl sok sikertelen próbálkozás — kérlek, próbáld újra egy kicsit később.',
+    'auth/network-request-failed':'Nincs internetkapcsolat — bejelentkezés/regisztráció most nem lehetséges.',
+    'auth/user-disabled':'Ez a fiók le van tiltva.',
+  };
+  if(code && map[code]) return map[code];
+  if(typeof navigator!=='undefined' && navigator.onLine===false) return 'Nincs internetkapcsolat — próbáld újra, ha újra van net.';
+  return 'Váratlan hiba történt'+(code?(' ('+code+')'):'')+'. Próbáld újra.';
+}
+async function cloudSubmitAuth(){
+  const emailEl = document.getElementById('cloud-email');
+  const passEl = document.getElementById('cloud-password');
+  const email = (emailEl && emailEl.value || '').trim();
+  const password = (passEl && passEl.value) || '';
+  App.cloud.formEmail = email;
+  const mode = App.cloud.authMode || 'login';
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
+    App.cloud.authError = 'Adj meg egy érvényes e-mail címet.';
+    refreshCloudSection();
+    return;
+  }
+  if(mode==='register' && password.length<6){
+    App.cloud.authError = 'A jelszónak legalább 6 karakter hosszúnak kell lennie.';
+    refreshCloudSection();
+    return;
+  }
+  if(mode==='login' && !password){
+    App.cloud.authError = 'Add meg a jelszavad.';
+    refreshCloudSection();
+    return;
+  }
+  if(!fbAvailable || !fbAuth){
+    App.cloud.authError = 'A Fiók és szinkronizáció funkció jelenleg nem elérhető (nincs internetkapcsolat, vagy a szolgáltatás nem tölthető be).';
+    refreshCloudSection();
+    return;
+  }
+  App.cloud.authBusy = true;
+  App.cloud.authError = null;
+  refreshCloudSection();
+  try{
+    if(mode==='register'){
+      await fbAuth.createUserWithEmailAndPassword(email, password);
+    } else {
+      await fbAuth.signInWithEmailAndPassword(email, password);
+    }
+    // A sikeres eredményt onFbAuthStateChanged() dolgozza fel.
+  }catch(e){
+    App.cloud.authError = cloudAuthErrorMessage(e);
+  }
+  App.cloud.authBusy = false;
+  refreshCloudSection();
+}
+function cloudSignOut(){
+  if(fbAuth){
+    fbAuth.signOut().catch(e=>console.warn('MotivApp: kijelentkezés sikertelen.', e));
+  }
+}
+function cloudSyncStatusText(){
+  const c = App.cloud;
+  const online = (typeof navigator==='undefined') || navigator.onLine!==false;
+  if((c.status==='offline') || (c.status==='syncing' && !online)) return 'Nincs internetkapcsolat, később szinkronizál';
+  if(c.status==='syncing') return 'Szinkronizálás…';
+  if(c.status==='error') return 'Szinkronizálási hiba'+(c.error?(': '+c.error):'')+' — a helyi adatok biztonságban vannak.';
+  if(c.status==='synced' && c.lastSyncAt){
+    const d = c.lastSyncAt;
+    const iso = d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
+    return 'Szinkronizálva: '+fmtDateHu(iso)+' '+fmtTime(d);
+  }
+  return 'Szinkronizálás előkészítése…';
+}
+function cloudAuthFormHtml(){
+  const mode = App.cloud.authMode || 'login';
+  const err = App.cloud.authError;
+  return `
+    <div class="chiprow" style="margin-bottom:12px;">
+      <div class="chip${mode==='login'?' active':''}" id="cloud-tab-login" onclick="cloudSetAuthMode('login')">Bejelentkezés</div>
+      <div class="chip${mode==='register'?' active':''}" id="cloud-tab-register" onclick="cloudSetAuthMode('register')">Regisztráció</div>
+    </div>
+    <div class="field"><label>E-mail cím</label><input type="email" id="cloud-email" autocomplete="email" placeholder="pelda@email.hu" value="${escapeHtml(App.cloud.formEmail||'')}"></div>
+    <div class="field"><label>Jelszó</label><input type="password" id="cloud-password" autocomplete="${mode==='register'?'new-password':'current-password'}" placeholder="${mode==='register'?'legalább 6 karakter':'jelszó'}"></div>
+    ${err ? `<div class="small" id="cloud-auth-error" style="color:var(--trail-red);margin-bottom:10px;">${escapeHtml(err)}</div>` : ''}
+    <button class="btn btn-primary btn-block" id="cloud-submit-btn" ${App.cloud.authBusy?'disabled':''} onclick="cloudSubmitAuth()">${App.cloud.authBusy?'Kérlek várj…':(mode==='register'?'Regisztráció':'Bejelentkezés')}</button>
+    <div class="small muted" style="text-align:center;margin-top:10px;">Ez a lépés opcionális — az app fiók nélkül, helyben is teljesen működik. Csak akkor van rá szükség, ha több eszköz között szeretnéd szinkronizálni az adataidat.</div>
+  `;
+}
+function cloudSyncSectionHtml(){
+  if(_fbInitInFlight || (!_fbInitAttempted && !fbAvailable)){
+    return `<div class="sectiontitle">Fiók és szinkronizáció</div>
+      <div class="card"><div class="small muted">Betöltés…</div></div>`;
+  }
+  if(!fbAvailable){
+    return `<div class="sectiontitle">Fiók és szinkronizáció</div>
+      <div class="card"><div class="small muted">A fiók/felhő-szinkronizáció funkció jelenleg nem elérhető (nincs internetkapcsolat, vagy a szükséges szolgáltatás nem töltődött be). Az app minden más funkciója ettől függetlenül, helyben teljesen működik - ez a rész csak opcionális kiegészítő a több eszköz közötti szinkronizáláshoz.</div></div>`;
+  }
+  const user = App.cloud.user;
+  if(!user){
+    return `<div class="sectiontitle">Fiók és szinkronizáció</div>
+      <div class="card" id="cloud-auth-card">${cloudAuthFormHtml()}</div>`;
+  }
+  return `<div class="sectiontitle">Fiók és szinkronizáció</div>
+    <div class="card">
+      <div class="row"><div class="row-main"><div class="row-title" id="cloud-account-email">${escapeHtml(user.email||'')}</div><div class="row-sub" id="cloud-sync-status">${cloudSyncStatusText()}</div></div></div>
+      <button class="btn btn-block" id="cloud-signout-btn" style="margin-top:10px;" onclick="cloudSignOut()">Kijelentkezés</button>
+    </div>`;
+}
+
+/* ---- Első bejelentkezés / új eszköz - migráció/ütközés megerősítő sheet ----
+   SOHA nem ír felül automatikusan egyik oldalt sem: amíg a felhasználó nem
+   dönt (vagy "Most nem döntök"-öt választ), sem push, sem a bejövő
+   onSnapshot-alkalmazás nem történik meg (ld. a migrationPending/
+   conflictPending ellenőrzéseket fentebb) - "Most nem döntök" esetén a
+   döntés a következő bejelentkezéskor/app-indításkor újra felajánlásra
+   kerül, amíg a user ténylegesen nem választ. */
+function openCloudMigrationSheet(kind){
+  if(kind==='no-cloud'){
+    openSheet(`<div class="sheet-head"><div class="sheet-title">Kezdő felhő-másolat</div></div>
+      <div class="small muted" style="margin-bottom:16px;">Ehhez a fiókhoz még nem tartozik felhőben tárolt adat, de ezen az eszközön már van helyi adatod. Feltöltöd ezt, hogy ez legyen a fiókod kiinduló, több eszközzel is szinkronizálódó másolata?</div>
+      <button class="btn btn-primary btn-block" id="cloud-migrate-upload" onclick="resolveCloudMigration('upload')">Igen, feltöltöm a helyi adataimat</button>
+      <button class="btn btn-block" id="cloud-migrate-later" style="margin-top:8px;" onclick="resolveCloudMigration('later')">Most nem döntök</button>`);
+  } else {
+    openSheet(`<div class="sheet-head"><div class="sheet-title">Ütköző adatok</div></div>
+      <div class="small muted" style="margin-bottom:16px;">Ehhez a fiókhoz már tartozik felhőben tárolt adat, DE ezen az eszközön is van már helyi adat. Melyiket szeretnéd megtartani? (A nem választott oldal adatai elvesznek/felülíródnak ezen az eszközön.)</div>
+      <button class="btn btn-primary btn-block" id="cloud-migrate-download" onclick="resolveCloudMigration('download')">Felhő adatok betöltése (helyi adatok felülírása)</button>
+      <button class="btn btn-block" id="cloud-migrate-later" style="margin-top:8px;" onclick="resolveCloudMigration('later')">Most nem döntök</button>`);
+  }
+}
+function resolveCloudMigration(choice){
+  if(choice==='upload'){
+    App.cloud.migrationPending = false;
+    pushLocalToCloud();
+    closeSheet();
+    toast('Feltöltés elindítva');
+  } else if(choice==='download'){
+    const data = App.cloud.pendingCloudData;
+    App.cloud.conflictPending = false;
+    App.cloud.pendingCloudData = null;
+    if(data) applyCloudData(data);
+    closeSheet();
+    toast('Felhő adatok betöltve');
+  } else {
+    closeSheet();
+  }
+  refreshCloudSection();
+}
+
+window.addEventListener('online', ()=>{ if(App.cloud.user) refreshCloudSection(); });
+window.addEventListener('offline', ()=>{ if(App.cloud.user){ refreshCloudSection(); } });
+/* fbInit() hívása SZÁNDÉKOSAN NEM itt, hanem a fájl végi init() IIFE-ben,
+   await loadState() UTÁN történik - így egy már bejelentkezett (LOCAL
+   persistence) felhasználó onAuthStateChanged-visszahívása sosem előzheti
+   meg App.state betöltését (ami null/félkész állapotot pusholna a felhőbe). */
+
 
 /* ===== FÁJLBA MENTÉS/BETÖLTÉS (File System Access API, opcionális) =====
    A hasFSAccess feature-detect eldönti, hogy a böngésző tudja-e a
@@ -5239,6 +5798,11 @@ RENDERERS.achievements = function(){
 
 RENDERERS.settings = function(){
   const p = App.state.aiPerm;
+  // A Beállítások megnyitása az első (idempotens) kiváltó a Firebase SDK
+  // igény szerinti betöltéséhez, ld. ensureCloudInit()/loadFirebaseSdkScripts()
+  // doksiját - ez SOSEM fut le automatikusan a runRegressionChecks() CI-futás
+  // alatt, mivel az sosem nyitja meg ezt a nézetet.
+  if(typeof ensureCloudInit==='function') ensureCloudInit();
   document.getElementById('view-settings').innerHTML = subHeader('Beállítások') + `
     <div class="sectiontitle">MotivAI jogosultságok</div>
     <div class="card">
@@ -5249,6 +5813,7 @@ RENDERERS.settings = function(){
       <div class="aipermrow"><div><div style="font-weight:600;font-size:14px;">🟡 Terv megerősítés</div><div class="small muted">Edzésterv-módosítás jóváhagyást kér</div></div>
         <label class="switch"><input type="checkbox" ${p.confirmPlan?'checked':''} onchange="togglePerm('confirmPlan',this.checked)"><span class="slider"></span></label></div>
     </div>
+    <div id="cloud-sync-section">${cloudSyncSectionHtml()}</div>
     <div class="sectiontitle">Adatok</div>
     <div id="save-status-badge">${saveStatusBadgeHtml()}</div>
     <div class="card" style="padding:2px 16px;">
@@ -7506,6 +8071,21 @@ window.runRegressionChecks = runRegressionChecks;
 (async function init(){
   await loadState();
   renderApp();
+  // Fiók és felhő szinkronizáció (Firebase) - CSAK akkor indítjuk el itt,
+  // induláskor, ha ez az eszköz korábban már be volt jelentkezve (ld.
+  // CLOUD_LOGIN_FLAG_KEY), hogy a "bejelentkezve maradok" élmény
+  // (LOCAL persistence) induláskor is automatikusan visszaálljon. Egy
+  // fiók nélküli / még sosem bejelentkezett eszközön (ez a CI regressziós
+  // futás normál esete is) ez a blokk EGYÁLTALÁN nem próbál hálózatot
+  // elérni - ld. ensureCloudInit()/loadFirebaseSdkScripts() doksiját arról,
+  // miért fontos ez. SZÁNDÉKOSAN await loadState() UTÁN, hogy egy visszaálló
+  // munkamenet onAuthStateChanged-visszahívása sose előzhesse meg App.state
+  // betöltését.
+  try{
+    if(typeof ensureCloudInit==='function' && localStorage.getItem(CLOUD_LOGIN_FLAG_KEY)==='1'){
+      ensureCloudInit();
+    }
+  }catch(e){ console.warn('MotivApp: Fiók és szinkronizáció indítása sikertelen.', e); }
   // Ciklus-vége AI-összefoglaló ellenőrzése minden app-indításkor/-visszatéréskor
   // (ld. rpgCheckCycleSummary doksija) — ugyanúgy a loadState() UTÁNI, egyszeri
   // induló szakaszban fut, mint a lenti natív Health Connect utóellenőrzések.
