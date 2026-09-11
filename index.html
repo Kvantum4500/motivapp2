@@ -374,12 +374,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.25';
+const APP_VERSION = '2.2.26';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.25';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.26';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -1694,6 +1694,40 @@ function dayTypeFor(iso){
   return pat[scheduleDayIndex(iso)];
 }
 function escapeHtml(s){ return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+/* formatAmountInputLive(el): egy Ft-összeg <input type="text" inputmode="numeric">
+   mezőt élőben, GÉPELÉS KÖZBEN ezres-tagol (szóközzel, ugyanaz a formátum, mint a
+   toLocaleString('hu-HU') mindenhol máshol az appban). Csak számjegyeket enged meg
+   (bármi más karaktert eldob) - forintösszegeknél nincs tizedesjegy/fillér az
+   App.state-ben, ezért ez biztonságos. A kurzorpozíciót a mező elé eső SZÁMJEGYEK
+   száma alapján állítja vissza újraformázás után, hogy a szám közepén gépelés
+   közben a kurzor ne ugorjon a mező végére minden billentyűleütésnél. */
+function formatAmountInputLive(el){
+  if(!el || el._amountFormatBound) return; // idempotens - ne kössünk rá duplán, ha egy sheet/lista többször renderelődik
+  el._amountFormatBound = true;
+  el.addEventListener('input', function(){
+    const cursorPos = el.selectionStart;
+    const digitsBeforeCursor = el.value.slice(0, cursorPos).replace(/\D/g,'').length;
+    const digits = el.value.replace(/\D/g,'').replace(/^0+(?=\d)/,'');
+    el.value = digits ? Number(digits).toLocaleString('hu-HU') : '';
+    let seen = 0, newPos = el.value.length;
+    for(let i=0;i<el.value.length;i++){
+      if(/\d/.test(el.value[i])) seen++;
+      if(seen===digitsBeforeCursor){ newPos = i+1; break; }
+    }
+    if(digitsBeforeCursor===0) newPos = 0;
+    el.setSelectionRange(newPos, newPos);
+  });
+}
+/* parseAmountInput(v): a formatAmountInputLive()-tal formázott (szóközökkel tagolt)
+   mező .value-jából (vagy közvetlen string/number bemenetből) visszanyeri a tiszta
+   számot - minden számjegyen kívüli karaktert eldob, tehát a "150 000" -> 150000-et
+   ad. Mindenhol EZT kell hívni parseFloat(...)/parseInt(...) helyett az érintett 14
+   mezőnél, különben a szóköz miatt parseFloat("150 000") téves eredményt (150)
+   adna. */
+function parseAmountInput(v){
+  const s = (v==null) ? '' : String(v);
+  return parseFloat(s.replace(/[^\d]/g,'')) || 0;
+}
 /* sanitizeImportedId/sanitizeIcon: closes an XSS hole found in a security review.
    Many render sites build `onclick="fn('${x.id}')"` from stored .id values -
    escapeHtml() alone doesn't make that safe, because a value containing a quote
@@ -4926,7 +4960,7 @@ function renderAiChat(){
           <div style="font-size:13.5px;font-weight:600;">${s.type==='finance'? escapeHtml(s.name)+' — kötelező kiadás' : s.type==='activity_template'? (DAY_TYPE_SHORT[s.dayType]||s.dayType)+' napok mintája: '+escapeHtml((s.activity||{}).label||'') : s.type==='activity_log'? '⚡ '+escapeHtml(s.label||(ACTIVITY_TYPES.find(t=>t.id===s.activityType)||{}).name||'Aktivitás')+' naplózása' : s.type==='income'? 'Havi bevétel beállítása' : s.type==='schedule_pattern'? 'Műszakrend beállítása ('+(s.pattern||[]).length+' napos ciklus)' : s.type==='meal'? '🍽️ '+escapeHtml(s.name||'Étkezés') : s.type==='task'? '📋 '+escapeHtml(s.title||'Feladat') : s.type==='event'? '🗓️ '+escapeHtml(s.title||'Esemény') : s.type==='workout'? '💪 '+escapeHtml(s.category||'Edzés')+' naplózása' : s.type==='weight'? '⚖️ Testsúly rögzítése' : s.type==='health_log'? '🩺 Egészségadat rögzítése' : s.type==='discretionary_spend'? '🛍️ Költés: '+escapeHtml(s.name||'') : s.type==='savings_add'? '🏦 Megtakarítás: '+escapeHtml(s.name||'') : s.type==='journal'? '📓 Napló bejegyzés' : s.type==='skill_unlock'? '🌟 Skill feloldása: '+escapeHtml(s.skillName||'') : s.type==='rpg_quest_add'? '⚔️ Kaland küldetés: '+escapeHtml(s.text||'') : s.type==='rpg_quest_complete'? '✅ Kaland küldetés teljesítése: '+escapeHtml(s.text||'') : s.type==='start_journey'? '🥾 Túrakövetés elindítása' : s.type==='stop_journey'? '⏹️ Túrakövetés leállítása és mentése' : escapeHtml(s.title||'')}</div>
           ${s.type==='schedule_pattern'? `<div class="small muted" style="margin-top:2px;">Kezdés: ${s.startDate||'?'} — ${(s.pattern||[]).map(p=>DAY_TYPE_SHORT[p]||p).join(' → ')}</div>`:''}
           ${s.type==='activity_template'? `<div class="small muted" style="margin-top:2px;">${(s.activity||{}).durationMin||0} perc · 💪${(s.activity||{}).physical||'?'} 🧠${(s.activity||{}).mental||'?'} · energia ${(s.activity||{}).energyBefore||'?'}→${(s.activity||{}).energyAfter||'?'} — jövőbeli hasonló napokra is felkerül</div>`:''}
-          ${(s.type==='finance'||s.type==='income')? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="number" value="${Number(s.amount)||0}" style="width:100%;margin-top:2px;"></label>` : ''}
+          ${(s.type==='finance'||s.type==='income')? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="text" inputmode="numeric" value="${Number(s.amount)?Number(s.amount).toLocaleString('hu-HU'):''}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='meal'? `<div class="small muted" style="margin-top:2px;">Helyesek ezek az értékek? Ellenőrizd, és írd át, ha nem.</div>
             <label class="small muted" style="display:block;margin-top:6px;">Kalória (kcal)<input id="ai-sugg-kcal-${i}-${si}" type="number" value="${Number(s.kcal)||0}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Fehérje (g)<input id="ai-sugg-protein-${i}-${si}" type="number" value="${Number(s.protein)||0}" style="width:100%;margin-top:2px;"></label>
@@ -4958,8 +4992,8 @@ function renderAiChat(){
             <label class="small muted" style="display:block;margin-top:6px;">Alvás (óra)<input id="ai-sugg-sleep-${i}-${si}" type="number" step="0.1" value="${s.sleepH??''}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Lépés<input id="ai-sugg-steps-${i}-${si}" type="number" value="${s.steps??''}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Pulzus<input id="ai-sugg-pulse-${i}-${si}" type="number" value="${s.pulse??''}" style="width:100%;margin-top:2px;"></label>` : ''}
-          ${s.type==='discretionary_spend'? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="number" value="${Number(s.amount)||0}" style="width:100%;margin-top:2px;"></label>` : ''}
-          ${s.type==='savings_add'? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="number" value="${Number(s.amount)||0}" style="width:100%;margin-top:2px;"></label>` : ''}
+          ${s.type==='discretionary_spend'? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="text" inputmode="numeric" value="${Number(s.amount)?Number(s.amount).toLocaleString('hu-HU'):''}" style="width:100%;margin-top:2px;"></label>` : ''}
+          ${s.type==='savings_add'? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="text" inputmode="numeric" value="${Number(s.amount)?Number(s.amount).toLocaleString('hu-HU'):''}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='journal'? `<label class="small muted" style="display:block;margin-top:6px;">Hangulat (1-5)<input id="ai-sugg-mood-${i}-${si}" type="number" min="1" max="5" value="${s.mood||''}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Szöveg<textarea id="ai-sugg-jtext-${i}-${si}" style="width:100%;margin-top:2px;">${escapeHtml(s.text||'')}</textarea></label>` : ''}
           ${s.type==='skill_unlock'? `<div class="small muted" style="margin-top:2px;">Csak akkor jelöld, ha valóban elérted — ez a saját fejlődésed jelzője, nem automatikus számítás.</div>` : ''}
@@ -4983,6 +5017,7 @@ function renderAiChat(){
   log.querySelectorAll('[id^="ai-sugg-muscles-"] .chip').forEach(c=>{
     c.addEventListener('click', ()=>c.classList.toggle('active'));
   });
+  document.querySelectorAll('[id^="ai-sugg-amount-"]').forEach(formatAmountInputLive);
 }
 function normFin(str){ return (str||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,''); }
 function matchActivityTypeId(label){
@@ -5415,7 +5450,7 @@ function acceptAiSuggestion(mi,si){
   // Szerkeszthető mezők beolvasása a kártyáról jóváhagyás előtt (lásd renderAiChat).
   if(s.type==='finance' || s.type==='income' || s.type==='discretionary_spend' || s.type==='savings_add'){
     const el = document.getElementById('ai-sugg-amount-'+mi+'-'+si);
-    if(el) s.amount = Number(el.value)||0;
+    if(el) s.amount = parseAmountInput(el.value);
   } else if(s.type==='meal'){
     const kcalEl=document.getElementById('ai-sugg-kcal-'+mi+'-'+si);
     const proteinEl=document.getElementById('ai-sugg-protein-'+mi+'-'+si);
@@ -5684,22 +5719,24 @@ function drawDonutChart(canvas,segments,centerLabel,centerValue){
 }
 function editIncomeSheet(){
   openSheet(`<div class="sheet-head"><div class="sheet-title">Havi nettó fizetés</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
-    <div class="field"><input type="number" id="inc-val" min="0" value="${App.state.finance.monthlyIncome||''}" style="font-size:20px;text-align:center;padding:16px;" placeholder="Ft"></div>
+    <div class="field"><input type="text" inputmode="numeric" id="inc-val" value="${App.state.finance.monthlyIncome?App.state.finance.monthlyIncome.toLocaleString('hu-HU'):''}" style="font-size:20px;text-align:center;padding:16px;" placeholder="Ft"></div>
     <button class="btn btn-primary btn-block" onclick="saveIncome()">Mentés</button>`);
+  formatAmountInputLive(document.getElementById('inc-val'));
 }
-function saveIncome(){ const v=parseFloat(document.getElementById('inc-val').value)||0; if(v<0){ toast('Az érték nem lehet negatív'); return; } App.state.finance.monthlyIncome=v; saveState(); closeSheet(); toast('Mentve'); RENDERERS.finance(); }
+function saveIncome(){ const v=parseAmountInput(document.getElementById('inc-val').value); if(v<0){ toast('Az érték nem lehet negatív'); return; } App.state.finance.monthlyIncome=v; saveState(); closeSheet(); toast('Mentve'); RENDERERS.finance(); }
 function addMandatorySheet(){
   openSheet(`<div class="sheet-head"><div class="sheet-title">Kötelező tétel</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     <div class="field"><label>Megnevezés</label><input type="text" id="mn-name" placeholder="Pl. Biztosítás"></div>
-    <div class="field"><label>Összeg (Ft)</label><input type="number" id="mn-amount" min="0"></div>
+    <div class="field"><label>Összeg (Ft)</label><input type="text" inputmode="numeric" id="mn-amount"></div>
     <div class="field"><label>Típus</label><div class="chiprow" id="mn-type"><div class="chip active" data-v="fix">Fix</div><div class="chip" data-v="valtozo">Változó</div></div></div>
     <button class="btn btn-primary btn-block" onclick="saveMandatory()">Mentés</button>`);
   document.querySelectorAll('#mn-type .chip').forEach(c=>c.addEventListener('click',()=>{document.querySelectorAll('#mn-type .chip').forEach(x=>x.classList.remove('active'));c.classList.add('active');}));
+  formatAmountInputLive(document.getElementById('mn-amount'));
 }
 function saveMandatory(){
   const name=document.getElementById('mn-name').value.trim();
   if(!name){ toast('Adj meg egy nevet'); return; }
-  const amount=parseFloat(document.getElementById('mn-amount').value)||0;
+  const amount=parseAmountInput(document.getElementById('mn-amount').value);
   if(amount<0){ toast('Az érték nem lehet negatív'); return; }
   App.state.finance.mandatory.push({id:uid(),name,icon:'💳',amount,type:document.querySelector('#mn-type .chip.active').dataset.v});
   saveState(); closeSheet(); toast('Hozzáadva'); RENDERERS.finance();
@@ -5709,7 +5746,7 @@ function editMandatorySheet(id){
   const idx=App.state.finance.mandatory.findIndex(i=>i.id===id);
   const len=App.state.finance.mandatory.length;
   openSheet(`<div class="sheet-head"><div class="sheet-title">${escapeHtml(x.name)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
-    <div class="field"><input type="number" id="mn-edit-amount" min="0" value="${x.amount||''}" style="font-size:20px;text-align:center;padding:16px;"></div>
+    <div class="field"><input type="text" inputmode="numeric" id="mn-edit-amount" value="${x.amount?x.amount.toLocaleString('hu-HU'):''}" style="font-size:20px;text-align:center;padding:16px;"></div>
     <button class="btn btn-primary btn-block" onclick="saveMandatoryAmount('${id}')">Mentés</button>
     <div class="hr"></div>
     <div class="flex gap8" style="margin-top:10px;">
@@ -5717,10 +5754,11 @@ function editMandatorySheet(id){
       <button class="btn btn-ghost btn-sm" style="flex:1;${idx===len-1?'opacity:0.35;cursor:not-allowed;':''}" ${idx===len-1?'disabled':''} onclick="moveFinanceItem('mandatory','${id}',1);closeSheet();">⬇️ Lejjebb</button>
     </div>
     <button class="btn btn-danger btn-sm btn-block" style="margin-top:8px;" onclick="removeFinanceItem('mandatory','${id}');closeSheet();">🗑️ Törlés</button>`);
+  formatAmountInputLive(document.getElementById('mn-edit-amount'));
 }
 function saveMandatoryAmount(id){
   const x=App.state.finance.mandatory.find(i=>i.id===id); if(!x) return;
-  const v=parseFloat(document.getElementById('mn-edit-amount').value)||0;
+  const v=parseAmountInput(document.getElementById('mn-edit-amount').value);
   if(v<0){ toast('Az érték nem lehet negatív'); return; }
   x.amount=v;
   saveState(); closeSheet(); toast('Mentve'); RENDERERS.finance();
@@ -5728,21 +5766,23 @@ function saveMandatoryAmount(id){
 function addDiscretionarySheet(){
   openSheet(`<div class="sheet-head"><div class="sheet-title">Új kategória</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     <div class="field"><label>Megnevezés</label><input type="text" id="dc-name" placeholder="Pl. Ruházat"></div>
-    <div class="field"><label>Havi keret (Ft)</label><input type="number" id="dc-limit" min="0"></div>
+    <div class="field"><label>Havi keret (Ft)</label><input type="text" inputmode="numeric" id="dc-limit"></div>
     <button class="btn btn-primary btn-block" onclick="saveDiscretionary()">Mentés</button>`);
+  formatAmountInputLive(document.getElementById('dc-limit'));
 }
 function saveDiscretionary(){
   const name=document.getElementById('dc-name').value.trim();
   if(!name){ toast('Adj meg egy nevet'); return; }
-  const limit=parseFloat(document.getElementById('dc-limit').value)||0;
+  const limit=parseAmountInput(document.getElementById('dc-limit').value);
   if(limit<0){ toast('Az érték nem lehet negatív'); return; }
   App.state.finance.discretionary.push({id:uid(),name,icon:'🛍️',spent:0,limit});
   saveState(); closeSheet(); toast('Hozzáadva'); RENDERERS.finance();
 }
 function logSpendSheet(id){
   openSheet(`<div class="sheet-head"><div class="sheet-title">Költés hozzáadása</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
-    <div class="field"><input type="number" id="sp-amount" min="0" style="font-size:20px;text-align:center;padding:16px;" placeholder="Ft"></div>
+    <div class="field"><input type="text" inputmode="numeric" id="sp-amount" style="font-size:20px;text-align:center;padding:16px;" placeholder="Ft"></div>
     <button class="btn btn-primary btn-block" onclick="saveSpend('${id}')">Hozzáadás</button>`);
+  formatAmountInputLive(document.getElementById('sp-amount'));
 }
 // recordSpendAndCheckDup: minden egyes rögzített egyéb kiadást felír egy közös,
 // könnyű naplóba (App.state.finance.spendLedger), és megnézi, volt-e MÁR ugyanazon a
@@ -5762,7 +5802,7 @@ function recordSpendAndCheckDup(categoryId, amount, date, source){
 }
 function saveSpend(id){
   const x=App.state.finance.discretionary.find(i=>i.id===id); if(!x) return;
-  const v=parseFloat(document.getElementById('sp-amount').value)||0;
+  const v=parseAmountInput(document.getElementById('sp-amount').value);
   if(v<0){ toast('Az érték nem lehet negatív'); return; }
   x.spent=(x.spent||0)+v;
   const dupWarning = recordSpendAndCheckDup(x.id, v, todayISO(), 'manual');
@@ -5890,7 +5930,7 @@ function openBankNotificationSheet(amount, rawText){
   openSheet(`<div class="sheet-head"><div class="sheet-title">Banki értesítés</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     ${rawText?`<div class="small muted" style="margin:-4px 0 10px;">${escapeHtml(String(rawText)).slice(0,140)}</div>`:''}
     ${queueHint}
-    <div class="field"><input type="number" id="bn-amount" min="0" style="font-size:20px;text-align:center;padding:16px;" value="${amount||''}" placeholder="Ft"></div>
+    <div class="field"><input type="text" inputmode="numeric" id="bn-amount" style="font-size:20px;text-align:center;padding:16px;" value="${amount?Number(amount).toLocaleString('hu-HU'):''}" placeholder="Ft"></div>
     <div class="field"><label>Melyik kategóriába tartozik?</label>
       <div class="chiprow" id="bn-cat">${chips || '<span class="small muted">Nincs kategória felvéve - vegyél fel egyet a Pénzügyeknél.</span>'}</div>
     </div>
@@ -5898,9 +5938,10 @@ function openBankNotificationSheet(amount, rawText){
   document.querySelectorAll('#bn-cat .chip').forEach(c=>c.addEventListener('click',()=>{
     document.querySelectorAll('#bn-cat .chip').forEach(x=>x.classList.remove('active')); c.classList.add('active');
   }));
+  formatAmountInputLive(document.getElementById('bn-amount'));
 }
 function saveBankNotification(){
-  const v = parseFloat(document.getElementById('bn-amount').value);
+  const v = parseAmountInput(document.getElementById('bn-amount').value);
   if(!v || !isFinite(v) || v<=0){ toast('Adj meg egy érvényes összeget'); return; }
   const activeChip = document.querySelector('#bn-cat .chip.active');
   if(!activeChip){ toast('Válassz kategóriát'); return; }
@@ -5936,12 +5977,13 @@ function openFoodoraOrderSheet(amount, rawText){
     ${rawText?`<div class="small muted" style="margin:-4px 0 10px;">${escapeHtml(String(rawText)).slice(0,140)}</div>`:''}
     ${queueHint}
     ${statusHtml}
-    <div class="field"><input type="number" id="fo-amount" min="0" style="font-size:20px;text-align:center;padding:16px;" value="${amount||''}" placeholder="Ft"></div>
+    <div class="field"><input type="text" inputmode="numeric" id="fo-amount" style="font-size:20px;text-align:center;padding:16px;" value="${amount?Number(amount).toLocaleString('hu-HU'):''}" placeholder="Ft"></div>
     <button class="btn btn-primary btn-block" onclick="saveFoodoraOrder()">Mentés</button>`);
+  formatAmountInputLive(document.getElementById('fo-amount'));
 }
 function saveFoodoraOrder(){
   const ctx = _pendingFoodoraOrder || {};
-  const v = parseFloat(document.getElementById('fo-amount').value);
+  const v = parseAmountInput(document.getElementById('fo-amount').value);
   if(!v || !isFinite(v) || v<=0){ toast('Adj meg egy érvényes összeget'); return; }
   const x = App.state.finance.discretionary.find(i=>i.id===ctx.catId);
   if(!x){ toast('Nincs megfelelő kategória felvéve az étkezéshez'); return; }
@@ -5959,8 +6001,8 @@ function manageDiscretionarySheet(id){
   openSheet(`<div class="sheet-head"><div class="sheet-title">${escapeHtml(x.name)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     <div class="field"><label>Megnevezés</label><input type="text" id="dc-edit-name" value="${escapeHtml(x.name)}"></div>
     <div class="field"><label>Ikon (emoji)</label><input type="text" id="dc-edit-icon" value="${escapeHtml(x.icon||'🛍️')}" maxlength="16" style="width:70px;font-size:20px;text-align:center;"></div>
-    <div class="field"><label>Havi keret / cél összeg (Ft)</label><input type="number" id="dc-edit-limit" min="0" value="${x.limit||0}"></div>
-    <div class="field"><label>Eddig elköltött összeg (Ft)</label><input type="number" id="dc-edit-spent" min="0" value="${x.spent||0}" style="font-size:20px;text-align:center;padding:16px;"></div>
+    <div class="field"><label>Havi keret / cél összeg (Ft)</label><input type="text" inputmode="numeric" id="dc-edit-limit" value="${(x.limit||0).toLocaleString('hu-HU')}"></div>
+    <div class="field"><label>Eddig elköltött összeg (Ft)</label><input type="text" inputmode="numeric" id="dc-edit-spent" value="${(x.spent||0).toLocaleString('hu-HU')}" style="font-size:20px;text-align:center;padding:16px;"></div>
     <button class="btn btn-primary btn-block" onclick="saveDiscretionaryEdits('${id}')">Mentés</button>
     <div class="hr"></div>
     <div class="flex gap8" style="margin-top:10px;">
@@ -5968,6 +6010,8 @@ function manageDiscretionarySheet(id){
       <button class="btn btn-ghost btn-sm" style="flex:1;${idx===len-1?'opacity:0.35;cursor:not-allowed;':''}" ${idx===len-1?'disabled':''} onclick="moveFinanceItem('discretionary','${id}',1);closeSheet();">⬇️ Lejjebb</button>
     </div>
     <button class="btn btn-danger btn-sm btn-block" style="margin-top:8px;" onclick="removeFinanceItem('discretionary','${id}');closeSheet();">🗑️ Törlés</button>`);
+  formatAmountInputLive(document.getElementById('dc-edit-limit'));
+  formatAmountInputLive(document.getElementById('dc-edit-spent'));
 }
 /* saveDiscretionaryEdits: az "Egyéb kategóriák" (discretionary) tétele eddig
    csak a nézet sorrendjében volt mozgatható/törölhető, az elköltött összeg
@@ -5983,9 +6027,9 @@ function saveDiscretionaryEdits(id){
   const name=(document.getElementById('dc-edit-name').value||'').trim();
   if(!name){ toast('Adj meg egy nevet'); return; }
   const icon=(document.getElementById('dc-edit-icon').value||'').trim();
-  const limit=parseFloat(document.getElementById('dc-edit-limit').value)||0;
+  const limit=parseAmountInput(document.getElementById('dc-edit-limit').value);
   if(limit<0){ toast('A keret nem lehet negatív'); return; }
-  const spent=parseFloat(document.getElementById('dc-edit-spent').value)||0;
+  const spent=parseAmountInput(document.getElementById('dc-edit-spent').value);
   if(spent<0){ toast('Az elköltött összeg nem lehet negatív'); return; }
   x.name=name;
   x.icon=icon||'🛍️';
@@ -5997,25 +6041,27 @@ function saveDiscretionaryEdits(id){
 function addSavingsSheet(){
   openSheet(`<div class="sheet-head"><div class="sheet-title">Új megtakarítási cél</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     <div class="field"><label>Megnevezés</label><input type="text" id="sv-name" placeholder="Pl. Utazás"></div>
-    <div class="field"><label>Célösszeg (Ft)</label><input type="number" id="sv-target" min="0"></div>
+    <div class="field"><label>Célösszeg (Ft)</label><input type="text" inputmode="numeric" id="sv-target"></div>
     <button class="btn btn-primary btn-block" onclick="saveSavingsGoal()">Mentés</button>`);
+  formatAmountInputLive(document.getElementById('sv-target'));
 }
 function saveSavingsGoal(){
   const name=document.getElementById('sv-name').value.trim();
   if(!name){ toast('Adj meg egy nevet'); return; }
-  const target=parseFloat(document.getElementById('sv-target').value)||0;
+  const target=parseAmountInput(document.getElementById('sv-target').value);
   if(target<0){ toast('Az érték nem lehet negatív'); return; }
   App.state.finance.savings.push({id:uid(),name,icon:'🏦',saved:0,target});
   saveState(); closeSheet(); toast('Hozzáadva'); RENDERERS.finance();
 }
 function addToSavingsSheet(id){
   openSheet(`<div class="sheet-head"><div class="sheet-title">Befizetés</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
-    <div class="field"><input type="number" id="sv-add" min="0" style="font-size:20px;text-align:center;padding:16px;" placeholder="Ft"></div>
+    <div class="field"><input type="text" inputmode="numeric" id="sv-add" style="font-size:20px;text-align:center;padding:16px;" placeholder="Ft"></div>
     <button class="btn btn-primary btn-block" onclick="saveSavingsAdd('${id}')">Hozzáadás</button>`);
+  formatAmountInputLive(document.getElementById('sv-add'));
 }
 function saveSavingsAdd(id){
   const x=App.state.finance.savings.find(i=>i.id===id); if(!x) return;
-  const v=parseFloat(document.getElementById('sv-add').value)||0;
+  const v=parseAmountInput(document.getElementById('sv-add').value);
   if(v<0){ toast('Az érték nem lehet negatív'); return; }
   x.saved=(x.saved||0)+v;
   checkSavingsGoalMilestone(x); // Ötlet #35/#39 - ld. a definíciónál
@@ -6028,8 +6074,8 @@ function manageSavingsSheet(id){
   openSheet(`<div class="sheet-head"><div class="sheet-title">${escapeHtml(x.name)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     <div class="field"><label>Megnevezés</label><input type="text" id="sv-edit-name" value="${escapeHtml(x.name)}"></div>
     <div class="field"><label>Ikon (emoji)</label><input type="text" id="sv-edit-icon" value="${escapeHtml(x.icon||'🏦')}" maxlength="16" style="width:70px;font-size:20px;text-align:center;"></div>
-    <div class="field"><label>Célösszeg (Ft)</label><input type="number" id="sv-edit-target" min="0" value="${x.target||0}"></div>
-    <div class="field"><label>Eddig félretett összeg (Ft)</label><input type="number" id="sv-edit-saved" min="0" value="${x.saved||0}" style="font-size:20px;text-align:center;padding:16px;"></div>
+    <div class="field"><label>Célösszeg (Ft)</label><input type="text" inputmode="numeric" id="sv-edit-target" value="${(x.target||0).toLocaleString('hu-HU')}"></div>
+    <div class="field"><label>Eddig félretett összeg (Ft)</label><input type="text" inputmode="numeric" id="sv-edit-saved" value="${(x.saved||0).toLocaleString('hu-HU')}" style="font-size:20px;text-align:center;padding:16px;"></div>
     <button class="btn btn-primary btn-block" onclick="saveSavingsEdits('${id}')">Mentés</button>
     <div class="hr"></div>
     <div class="flex gap8" style="margin-top:10px;">
@@ -6037,6 +6083,8 @@ function manageSavingsSheet(id){
       <button class="btn btn-ghost btn-sm" style="flex:1;${idx===len-1?'opacity:0.35;cursor:not-allowed;':''}" ${idx===len-1?'disabled':''} onclick="moveFinanceItem('savings','${id}',1);closeSheet();">⬇️ Lejjebb</button>
     </div>
     <button class="btn btn-danger btn-sm btn-block" style="margin-top:8px;" onclick="removeFinanceItem('savings','${id}');closeSheet();">🗑️ Törlés</button>`);
+  formatAmountInputLive(document.getElementById('sv-edit-target'));
+  formatAmountInputLive(document.getElementById('sv-edit-saved'));
 }
 /* saveSavingsEdits: a megtakarítási célok eddig csak a nézet sorrendjében
    voltak mozgathatók/törölhetők, a félretett összeg pedig csak NÖVELHETŐ
@@ -6052,9 +6100,9 @@ function saveSavingsEdits(id){
   const name=(document.getElementById('sv-edit-name').value||'').trim();
   if(!name){ toast('Adj meg egy nevet'); return; }
   const icon=(document.getElementById('sv-edit-icon').value||'').trim();
-  const target=parseFloat(document.getElementById('sv-edit-target').value)||0;
+  const target=parseAmountInput(document.getElementById('sv-edit-target').value);
   if(target<0){ toast('A célösszeg nem lehet negatív'); return; }
-  const saved=parseFloat(document.getElementById('sv-edit-saved').value)||0;
+  const saved=parseAmountInput(document.getElementById('sv-edit-saved').value);
   if(saved<0){ toast('A félretett összeg nem lehet negatív'); return; }
   x.name=name;
   x.icon=icon||'🏦';
