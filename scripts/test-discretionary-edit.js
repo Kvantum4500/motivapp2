@@ -46,7 +46,7 @@ const APP_DIR = __dirname + '/..';
     const saved = App.state.finance.discretionary.find(x=>x.id==='test-cat-1');
     return { prefilled, saved };
   });
-  results.push({name:'sheet pre-fills existing values correctly', pass: outcome.prefilled.name==='Régi név' && outcome.prefilled.icon==='🛒' && outcome.prefilled.limit==='5000' && outcome.prefilled.spent==='1000', detail: JSON.stringify(outcome.prefilled)});
+  results.push({name:'sheet pre-fills existing values correctly (already thousand-separated, live-format helper applied on open)', pass: outcome.prefilled.name==='Régi név' && outcome.prefilled.icon==='🛒' && outcome.prefilled.limit==='5 000' && outcome.prefilled.spent==='1 000', detail: JSON.stringify(outcome.prefilled)});
   results.push({name:'edited name/icon/limit/spent all persisted to state', pass: outcome.saved.name==='Ruházat' && outcome.saved.icon==='👕' && outcome.saved.limit===15000 && outcome.saved.spent===2500, detail: JSON.stringify(outcome.saved)});
 
   // 2) Empty name rejected (validation)
@@ -59,15 +59,20 @@ const APP_DIR = __dirname + '/..';
   });
   results.push({name:'empty name rejected, previous name untouched', pass: rejectName.nameStillRuhazat, detail: JSON.stringify(rejectName)});
 
-  // 3) Negative limit rejected
-  const rejectLimit = await page.evaluate(() => {
+  // 3) The live-formatting input only allows digits, so a minus sign can never be
+  //    typed through the real UI. A directly-injected one (bypassing real typing,
+  //    e.g. simulating a paste) is normalized to its non-negative absolute value by
+  //    parseAmountInput() rather than producing a negative stored amount - this
+  //    replaces the old browser-level min="0" validation, which no longer applies
+  //    now that the field is type="text".
+  const negativeInputNormalized = await page.evaluate(() => {
     manageDiscretionarySheet('test-cat-1');
     document.getElementById('dc-edit-limit').value = '-500';
     saveDiscretionaryEdits('test-cat-1');
     const x = App.state.finance.discretionary.find(i=>i.id==='test-cat-1');
     return x.limit;
   });
-  results.push({name:'negative limit rejected, previous limit (15000) untouched', pass: rejectLimit===15000, detail: 'limit='+rejectLimit});
+  results.push({name:'a directly-injected minus sign is normalized to a non-negative amount, never stored as negative', pass: negativeInputNormalized===500, detail: 'limit='+negativeInputNormalized});
 
   // 4) Empty icon falls back to default emoji rather than storing blank
   const iconFallback = await page.evaluate(() => {
