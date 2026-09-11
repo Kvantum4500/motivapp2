@@ -374,12 +374,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.24';
+const APP_VERSION = '2.2.25';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.24';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.25';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -5545,7 +5545,9 @@ RENDERERS.finance = function(){
   const f = App.state.finance;
   const mandTotal = f.mandatory.reduce((s,x)=>s+(x.amount||0),0);
   const discSpent = f.discretionary.reduce((s,x)=>s+(x.spent||0),0);
-  const remaining = (f.monthlyIncome||0)-mandTotal-discSpent;
+  const discLimitTotal = f.discretionary.reduce((s,x)=>s+(x.limit||0),0);
+  const discPlanned = Math.max(0, discLimitTotal - discSpent); // hátralévő, még el nem költött keret
+  const freeRemaining = (f.monthlyIncome||0) - mandTotal - discLimitTotal; // a TELJES tervezett kerettel (nem csak az eddig elköltöttel) számolt, valóban szabad/le nem kötött pénz
 
   const attekintesHtml = `
     <div class="card">
@@ -5557,8 +5559,9 @@ RENDERERS.finance = function(){
       <div class="hr"></div>
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-green"></span>Fizetés</span><span class="mono small">${(f.monthlyIncome||0).toLocaleString('hu-HU')} Ft</span></div>
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-blue"></span>Kötelező kiadás</span><span class="mono small">${mandTotal.toLocaleString('hu-HU')} Ft</span></div>
-      <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-yellow"></span>Egyéb kiadás</span><span class="mono small">${discSpent.toLocaleString('hu-HU')} Ft</span></div>
-      <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small" style="font-weight:700;"><span class="dot dot-green"></span>Maradék</span><span class="mono small" style="font-weight:700;color:${remaining>=0?'var(--trail-green)':'var(--trail-red)'};">${remaining.toLocaleString('hu-HU')} Ft</span></div>
+      <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-yellow"></span>Egyéb kiadás – elköltött</span><span class="mono small">${discSpent.toLocaleString('hu-HU')} Ft</span></div>
+      <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-white"></span>Egyéb kiadás – tervezett (hátralévő keret)</span><span class="mono small">${discPlanned.toLocaleString('hu-HU')} Ft</span></div>
+      <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small" style="font-weight:700;"><span class="dot dot-green"></span>Jelenlegi szabad pénz</span><span class="mono small" style="font-weight:700;color:${freeRemaining>=0?'var(--trail-green)':'var(--trail-red)'};">${freeRemaining.toLocaleString('hu-HU')} Ft</span></div>
     </div>
 
     <div class="sectiontitle">Kiadások megoszlása</div>
@@ -5633,10 +5636,11 @@ RENDERERS.finance = function(){
     requestAnimationFrame(()=>{
       const canvas = document.getElementById('chart-donut');
       if(canvas) drawDonutChart(canvas, [
-        {value:Math.max(0,remaining), color:'#5C8F62'},
-        {value:mandTotal, color:'#4A85AC'},
-        {value:discSpent, color:'#D9A441'},
-      ], 'MARADÉK', remaining.toLocaleString('hu-HU')+' Ft');
+        {value:Math.max(0,freeRemaining), color:'#5C8F62'},   // Jelenlegi szabad pénz (var(--trail-green))
+        {value:mandTotal, color:'#4A85AC'},                     // Kötelező kiadás (var(--trail-blue))
+        {value:discSpent, color:'#D9A441'},                     // Egyéb kiadás - elköltött (var(--trail-yellow))
+        {value:discPlanned, color:'#EDE9DD'},                    // Egyéb kiadás - tervezett/hátralévő keret (var(--trail-white))
+      ], 'SZABAD PÉNZ', freeRemaining.toLocaleString('hu-HU')+' Ft');
     });
   }
 };
