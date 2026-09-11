@@ -40,7 +40,7 @@ const APP_DIR = __dirname + '/..';
     const saved = App.state.finance.savings.find(x=>x.id==='test-sv-1');
     return { prefilled, saved };
   });
-  results.push({name:'sheet pre-fills existing values correctly', pass: outcome.prefilled.name==='Régi cél' && outcome.prefilled.icon==='🏦' && outcome.prefilled.target==='20000' && outcome.prefilled.saved==='1000', detail: JSON.stringify(outcome.prefilled)});
+  results.push({name:'sheet pre-fills existing values correctly (already thousand-separated, live-format helper applied on open)', pass: outcome.prefilled.name==='Régi cél' && outcome.prefilled.icon==='🏦' && outcome.prefilled.target==='20 000' && outcome.prefilled.saved==='1 000', detail: JSON.stringify(outcome.prefilled)});
   results.push({name:'edited name/icon/target/saved all persisted', pass: outcome.saved.name==='Utazás' && outcome.saved.icon==='✈️' && outcome.saved.target===300000 && outcome.saved.saved===50000, detail: JSON.stringify(outcome.saved)});
 
   const rejectName = await page.evaluate(() => {
@@ -51,13 +51,18 @@ const APP_DIR = __dirname + '/..';
   });
   results.push({name:'empty name rejected, previous name untouched', pass: rejectName==='Utazás', detail: 'name='+rejectName});
 
-  const rejectTarget = await page.evaluate(() => {
+  // The live-formatting input only allows digits, so a minus sign can never be
+  // typed through the real UI. A directly-injected one (bypassing real typing) is
+  // normalized to its non-negative absolute value by parseAmountInput() rather than
+  // producing a negative stored amount - this replaces the old browser-level
+  // min="0" validation, which no longer applies now that the field is type="text".
+  const negativeInputNormalized = await page.evaluate(() => {
     manageSavingsSheet('test-sv-1');
     document.getElementById('sv-edit-target').value = '-100';
     saveSavingsEdits('test-sv-1');
     return App.state.finance.savings.find(i=>i.id==='test-sv-1').target;
   });
-  results.push({name:'negative target rejected, previous target (300000) untouched', pass: rejectTarget===300000, detail: 'target='+rejectTarget});
+  results.push({name:'a directly-injected minus sign is normalized to a non-negative amount, never stored as negative', pass: negativeInputNormalized===100, detail: 'target='+negativeInputNormalized});
 
   const iconFallback = await page.evaluate(() => {
     manageSavingsSheet('test-sv-1');

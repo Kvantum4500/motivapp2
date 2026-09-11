@@ -1694,13 +1694,27 @@ function dayTypeFor(iso){
   return pat[scheduleDayIndex(iso)];
 }
 function escapeHtml(s){ return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+/* fmtFtInput(n): ugyanazt a szóközös ezres-tagolást adja, mint a sima
+   Number.prototype.toLocaleString('hu-HU') mindenhol máshol az appban (pl.
+   "150 000 Ft" egy kártyán) - AZZAL A KÜLÖNBSÉGGEL, hogy a bare
+   .toLocaleString('hu-HU')-nak van egy empirikusan igazolt böngésző-motor
+   kvirkje: 4-jegyű (1000-9999) összegeknél NEM tesz be elválasztót
+   ((5000).toLocaleString('hu-HU') === "5000"!), csak 5+ jegytől. Explicit
+   useGrouping:true opcióval az Intl.NumberFormat ezt kijavítja ("5 000"),
+   5+ jegynél pedig KARAKTERRŐL KARAKTERRE ugyanazt adja, mint a bare
+   toLocaleString('hu-HU') - tehát ez a csere sehol nem tér el a meglévő
+   megjelenítésektől, csak a hiányzó 4-jegyű tagolást pótolja ott, ahol ez a
+   helper használva van (a 14 élőben tagolt Ft-mező). */
+function fmtFtInput(n){
+  return new Intl.NumberFormat('hu-HU',{useGrouping:true}).format(n);
+}
 /* formatAmountInputLive(el): egy Ft-összeg <input type="text" inputmode="numeric">
-   mezőt élőben, GÉPELÉS KÖZBEN ezres-tagol (szóközzel, ugyanaz a formátum, mint a
-   toLocaleString('hu-HU') mindenhol máshol az appban). Csak számjegyeket enged meg
-   (bármi más karaktert eldob) - forintösszegeknél nincs tizedesjegy/fillér az
-   App.state-ben, ezért ez biztonságos. A kurzorpozíciót a mező elé eső SZÁMJEGYEK
-   száma alapján állítja vissza újraformázás után, hogy a szám közepén gépelés
-   közben a kurzor ne ugorjon a mező végére minden billentyűleütésnél. */
+   mezőt élőben, GÉPELÉS KÖZBEN ezres-tagol (fmtFtInput()-tal, ld. fent). Csak
+   számjegyeket enged meg (bármi más karaktert eldob) - forintösszegeknél nincs
+   tizedesjegy/fillér az App.state-ben, ezért ez biztonságos. A kurzorpozíciót
+   a mező elé eső SZÁMJEGYEK száma alapján állítja vissza újraformázás után,
+   hogy a szám közepén gépelés közben a kurzor ne ugorjon a mező végére minden
+   billentyűleütésnél. */
 function formatAmountInputLive(el){
   if(!el || el._amountFormatBound) return; // idempotens - ne kössünk rá duplán, ha egy sheet/lista többször renderelődik
   el._amountFormatBound = true;
@@ -1708,7 +1722,7 @@ function formatAmountInputLive(el){
     const cursorPos = el.selectionStart;
     const digitsBeforeCursor = el.value.slice(0, cursorPos).replace(/\D/g,'').length;
     const digits = el.value.replace(/\D/g,'').replace(/^0+(?=\d)/,'');
-    el.value = digits ? Number(digits).toLocaleString('hu-HU') : '';
+    el.value = digits ? fmtFtInput(Number(digits)) : '';
     let seen = 0, newPos = el.value.length;
     for(let i=0;i<el.value.length;i++){
       if(/\d/.test(el.value[i])) seen++;
@@ -4960,7 +4974,7 @@ function renderAiChat(){
           <div style="font-size:13.5px;font-weight:600;">${s.type==='finance'? escapeHtml(s.name)+' — kötelező kiadás' : s.type==='activity_template'? (DAY_TYPE_SHORT[s.dayType]||s.dayType)+' napok mintája: '+escapeHtml((s.activity||{}).label||'') : s.type==='activity_log'? '⚡ '+escapeHtml(s.label||(ACTIVITY_TYPES.find(t=>t.id===s.activityType)||{}).name||'Aktivitás')+' naplózása' : s.type==='income'? 'Havi bevétel beállítása' : s.type==='schedule_pattern'? 'Műszakrend beállítása ('+(s.pattern||[]).length+' napos ciklus)' : s.type==='meal'? '🍽️ '+escapeHtml(s.name||'Étkezés') : s.type==='task'? '📋 '+escapeHtml(s.title||'Feladat') : s.type==='event'? '🗓️ '+escapeHtml(s.title||'Esemény') : s.type==='workout'? '💪 '+escapeHtml(s.category||'Edzés')+' naplózása' : s.type==='weight'? '⚖️ Testsúly rögzítése' : s.type==='health_log'? '🩺 Egészségadat rögzítése' : s.type==='discretionary_spend'? '🛍️ Költés: '+escapeHtml(s.name||'') : s.type==='savings_add'? '🏦 Megtakarítás: '+escapeHtml(s.name||'') : s.type==='journal'? '📓 Napló bejegyzés' : s.type==='skill_unlock'? '🌟 Skill feloldása: '+escapeHtml(s.skillName||'') : s.type==='rpg_quest_add'? '⚔️ Kaland küldetés: '+escapeHtml(s.text||'') : s.type==='rpg_quest_complete'? '✅ Kaland küldetés teljesítése: '+escapeHtml(s.text||'') : s.type==='start_journey'? '🥾 Túrakövetés elindítása' : s.type==='stop_journey'? '⏹️ Túrakövetés leállítása és mentése' : escapeHtml(s.title||'')}</div>
           ${s.type==='schedule_pattern'? `<div class="small muted" style="margin-top:2px;">Kezdés: ${s.startDate||'?'} — ${(s.pattern||[]).map(p=>DAY_TYPE_SHORT[p]||p).join(' → ')}</div>`:''}
           ${s.type==='activity_template'? `<div class="small muted" style="margin-top:2px;">${(s.activity||{}).durationMin||0} perc · 💪${(s.activity||{}).physical||'?'} 🧠${(s.activity||{}).mental||'?'} · energia ${(s.activity||{}).energyBefore||'?'}→${(s.activity||{}).energyAfter||'?'} — jövőbeli hasonló napokra is felkerül</div>`:''}
-          ${(s.type==='finance'||s.type==='income')? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="text" inputmode="numeric" value="${Number(s.amount)?Number(s.amount).toLocaleString('hu-HU'):''}" style="width:100%;margin-top:2px;"></label>` : ''}
+          ${(s.type==='finance'||s.type==='income')? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="text" inputmode="numeric" value="${Number(s.amount)?fmtFtInput(Number(s.amount)):''}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='meal'? `<div class="small muted" style="margin-top:2px;">Helyesek ezek az értékek? Ellenőrizd, és írd át, ha nem.</div>
             <label class="small muted" style="display:block;margin-top:6px;">Kalória (kcal)<input id="ai-sugg-kcal-${i}-${si}" type="number" value="${Number(s.kcal)||0}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Fehérje (g)<input id="ai-sugg-protein-${i}-${si}" type="number" value="${Number(s.protein)||0}" style="width:100%;margin-top:2px;"></label>
@@ -4992,8 +5006,8 @@ function renderAiChat(){
             <label class="small muted" style="display:block;margin-top:6px;">Alvás (óra)<input id="ai-sugg-sleep-${i}-${si}" type="number" step="0.1" value="${s.sleepH??''}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Lépés<input id="ai-sugg-steps-${i}-${si}" type="number" value="${s.steps??''}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Pulzus<input id="ai-sugg-pulse-${i}-${si}" type="number" value="${s.pulse??''}" style="width:100%;margin-top:2px;"></label>` : ''}
-          ${s.type==='discretionary_spend'? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="text" inputmode="numeric" value="${Number(s.amount)?Number(s.amount).toLocaleString('hu-HU'):''}" style="width:100%;margin-top:2px;"></label>` : ''}
-          ${s.type==='savings_add'? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="text" inputmode="numeric" value="${Number(s.amount)?Number(s.amount).toLocaleString('hu-HU'):''}" style="width:100%;margin-top:2px;"></label>` : ''}
+          ${s.type==='discretionary_spend'? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="text" inputmode="numeric" value="${Number(s.amount)?fmtFtInput(Number(s.amount)):''}" style="width:100%;margin-top:2px;"></label>` : ''}
+          ${s.type==='savings_add'? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="text" inputmode="numeric" value="${Number(s.amount)?fmtFtInput(Number(s.amount)):''}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='journal'? `<label class="small muted" style="display:block;margin-top:6px;">Hangulat (1-5)<input id="ai-sugg-mood-${i}-${si}" type="number" min="1" max="5" value="${s.mood||''}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Szöveg<textarea id="ai-sugg-jtext-${i}-${si}" style="width:100%;margin-top:2px;">${escapeHtml(s.text||'')}</textarea></label>` : ''}
           ${s.type==='skill_unlock'? `<div class="small muted" style="margin-top:2px;">Csak akkor jelöld, ha valóban elérted — ez a saját fejlődésed jelzője, nem automatikus számítás.</div>` : ''}
@@ -5719,7 +5733,7 @@ function drawDonutChart(canvas,segments,centerLabel,centerValue){
 }
 function editIncomeSheet(){
   openSheet(`<div class="sheet-head"><div class="sheet-title">Havi nettó fizetés</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
-    <div class="field"><input type="text" inputmode="numeric" id="inc-val" value="${App.state.finance.monthlyIncome?App.state.finance.monthlyIncome.toLocaleString('hu-HU'):''}" style="font-size:20px;text-align:center;padding:16px;" placeholder="Ft"></div>
+    <div class="field"><input type="text" inputmode="numeric" id="inc-val" value="${App.state.finance.monthlyIncome?fmtFtInput(App.state.finance.monthlyIncome):''}" style="font-size:20px;text-align:center;padding:16px;" placeholder="Ft"></div>
     <button class="btn btn-primary btn-block" onclick="saveIncome()">Mentés</button>`);
   formatAmountInputLive(document.getElementById('inc-val'));
 }
@@ -5746,7 +5760,7 @@ function editMandatorySheet(id){
   const idx=App.state.finance.mandatory.findIndex(i=>i.id===id);
   const len=App.state.finance.mandatory.length;
   openSheet(`<div class="sheet-head"><div class="sheet-title">${escapeHtml(x.name)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
-    <div class="field"><input type="text" inputmode="numeric" id="mn-edit-amount" value="${x.amount?x.amount.toLocaleString('hu-HU'):''}" style="font-size:20px;text-align:center;padding:16px;"></div>
+    <div class="field"><input type="text" inputmode="numeric" id="mn-edit-amount" value="${x.amount?fmtFtInput(x.amount):''}" style="font-size:20px;text-align:center;padding:16px;"></div>
     <button class="btn btn-primary btn-block" onclick="saveMandatoryAmount('${id}')">Mentés</button>
     <div class="hr"></div>
     <div class="flex gap8" style="margin-top:10px;">
@@ -5930,7 +5944,7 @@ function openBankNotificationSheet(amount, rawText){
   openSheet(`<div class="sheet-head"><div class="sheet-title">Banki értesítés</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     ${rawText?`<div class="small muted" style="margin:-4px 0 10px;">${escapeHtml(String(rawText)).slice(0,140)}</div>`:''}
     ${queueHint}
-    <div class="field"><input type="text" inputmode="numeric" id="bn-amount" style="font-size:20px;text-align:center;padding:16px;" value="${amount?Number(amount).toLocaleString('hu-HU'):''}" placeholder="Ft"></div>
+    <div class="field"><input type="text" inputmode="numeric" id="bn-amount" style="font-size:20px;text-align:center;padding:16px;" value="${amount?fmtFtInput(Number(amount)):''}" placeholder="Ft"></div>
     <div class="field"><label>Melyik kategóriába tartozik?</label>
       <div class="chiprow" id="bn-cat">${chips || '<span class="small muted">Nincs kategória felvéve - vegyél fel egyet a Pénzügyeknél.</span>'}</div>
     </div>
@@ -5977,7 +5991,7 @@ function openFoodoraOrderSheet(amount, rawText){
     ${rawText?`<div class="small muted" style="margin:-4px 0 10px;">${escapeHtml(String(rawText)).slice(0,140)}</div>`:''}
     ${queueHint}
     ${statusHtml}
-    <div class="field"><input type="text" inputmode="numeric" id="fo-amount" style="font-size:20px;text-align:center;padding:16px;" value="${amount?Number(amount).toLocaleString('hu-HU'):''}" placeholder="Ft"></div>
+    <div class="field"><input type="text" inputmode="numeric" id="fo-amount" style="font-size:20px;text-align:center;padding:16px;" value="${amount?fmtFtInput(Number(amount)):''}" placeholder="Ft"></div>
     <button class="btn btn-primary btn-block" onclick="saveFoodoraOrder()">Mentés</button>`);
   formatAmountInputLive(document.getElementById('fo-amount'));
 }
@@ -6001,8 +6015,8 @@ function manageDiscretionarySheet(id){
   openSheet(`<div class="sheet-head"><div class="sheet-title">${escapeHtml(x.name)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     <div class="field"><label>Megnevezés</label><input type="text" id="dc-edit-name" value="${escapeHtml(x.name)}"></div>
     <div class="field"><label>Ikon (emoji)</label><input type="text" id="dc-edit-icon" value="${escapeHtml(x.icon||'🛍️')}" maxlength="16" style="width:70px;font-size:20px;text-align:center;"></div>
-    <div class="field"><label>Havi keret / cél összeg (Ft)</label><input type="text" inputmode="numeric" id="dc-edit-limit" value="${(x.limit||0).toLocaleString('hu-HU')}"></div>
-    <div class="field"><label>Eddig elköltött összeg (Ft)</label><input type="text" inputmode="numeric" id="dc-edit-spent" value="${(x.spent||0).toLocaleString('hu-HU')}" style="font-size:20px;text-align:center;padding:16px;"></div>
+    <div class="field"><label>Havi keret / cél összeg (Ft)</label><input type="text" inputmode="numeric" id="dc-edit-limit" value="${fmtFtInput(x.limit||0)}"></div>
+    <div class="field"><label>Eddig elköltött összeg (Ft)</label><input type="text" inputmode="numeric" id="dc-edit-spent" value="${fmtFtInput(x.spent||0)}" style="font-size:20px;text-align:center;padding:16px;"></div>
     <button class="btn btn-primary btn-block" onclick="saveDiscretionaryEdits('${id}')">Mentés</button>
     <div class="hr"></div>
     <div class="flex gap8" style="margin-top:10px;">
@@ -6074,8 +6088,8 @@ function manageSavingsSheet(id){
   openSheet(`<div class="sheet-head"><div class="sheet-title">${escapeHtml(x.name)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     <div class="field"><label>Megnevezés</label><input type="text" id="sv-edit-name" value="${escapeHtml(x.name)}"></div>
     <div class="field"><label>Ikon (emoji)</label><input type="text" id="sv-edit-icon" value="${escapeHtml(x.icon||'🏦')}" maxlength="16" style="width:70px;font-size:20px;text-align:center;"></div>
-    <div class="field"><label>Célösszeg (Ft)</label><input type="text" inputmode="numeric" id="sv-edit-target" value="${(x.target||0).toLocaleString('hu-HU')}"></div>
-    <div class="field"><label>Eddig félretett összeg (Ft)</label><input type="text" inputmode="numeric" id="sv-edit-saved" value="${(x.saved||0).toLocaleString('hu-HU')}" style="font-size:20px;text-align:center;padding:16px;"></div>
+    <div class="field"><label>Célösszeg (Ft)</label><input type="text" inputmode="numeric" id="sv-edit-target" value="${fmtFtInput(x.target||0)}"></div>
+    <div class="field"><label>Eddig félretett összeg (Ft)</label><input type="text" inputmode="numeric" id="sv-edit-saved" value="${fmtFtInput(x.saved||0)}" style="font-size:20px;text-align:center;padding:16px;"></div>
     <button class="btn btn-primary btn-block" onclick="saveSavingsEdits('${id}')">Mentés</button>
     <div class="hr"></div>
     <div class="flex gap8" style="margin-top:10px;">
