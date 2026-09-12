@@ -7,6 +7,12 @@ const APP_DIR = __dirname + '/..';
 
 const DONUT_PALETTE = ['#4A85AC', '#D9A441', '#5C8F62', '#C1432B', '#EDE9DD'];
 const donutColor = i => DONUT_PALETTE[i % DONUT_PALETTE.length];
+// GOAL_PALETTE mirrors index.html's own definition (DONUT_PALETTE minus white) - Card 2's
+// goal segments use THIS, not donutColor, specifically so a goal segment can never collide
+// with the white "Nem konkrét célra félretett" segment. Only Card 3 (Teljes kép) uses
+// donutColor directly. Keep this in sync with index.html's GOAL_PALETTE if that ever changes.
+const GOAL_PALETTE = DONUT_PALETTE.filter(c => c !== '#EDE9DD');
+const goalColor = i => GOAL_PALETTE[i % GOAL_PALETTE.length];
 
 (async () => {
   const server = spawn('python3', ['-m', 'http.server', String(PORT)], { cwd: APP_DIR, stdio: 'pipe' });
@@ -107,9 +113,9 @@ const donutColor = i => DONUT_PALETTE[i % DONUT_PALETTE.length];
     const unallocated = totalSavingsBalance - totalGoalsSaved; // 250000
     const seg = r2.savings && r2.savings.segments;
     const ok = r2.savings && seg.length === 4
-      && seg[0].value === 200000 && seg[0].color === donutColor(0)
-      && seg[1].value === 100000 && seg[1].color === donutColor(1)
-      && seg[2].value === 50000 && seg[2].color === donutColor(2)
+      && seg[0].value === 200000 && seg[0].color === goalColor(0)
+      && seg[1].value === 100000 && seg[1].color === goalColor(1)
+      && seg[2].value === 50000 && seg[2].color === goalColor(2)
       && seg[3].value === unallocated && seg[3].color === '#EDE9DD'
       && r2.savings.centerValue === totalSavingsBalance.toLocaleString('hu-HU') + ' Ft';
     results.push({ name: 'Card 2: 3 goals + savings balance > sum(saved) -> correct unallocated segment', pass: ok, detail: JSON.stringify({ expectedUnallocated: unallocated, got: r2.savings }) });
@@ -144,6 +150,35 @@ const donutColor = i => DONUT_PALETTE[i % DONUT_PALETTE.length];
     results.push({ name: 'Card 2: goals sum > savings balance -> unallocated clamps to 0 (no negative segment, no trailing 0-segment)', pass: ok, detail: JSON.stringify(r3.savings) });
     const noUnallocatedRow = !r3.html.includes('Nem konkrét célra félretett');
     results.push({ name: 'Card 2: unallocated===0 -> "Nem konkrét célra félretett" row is omitted', pass: noUnallocatedRow, detail: 'html should not mention it' });
+  }
+
+  // 3b) Card 2: 5 goals (no unallocated remainder) -> goalColor's 4-color GOAL_PALETTE wraps at
+  // index 4 back to its own 1st color, WITHOUT ever landing on white ('#EDE9DD') - the exact
+  // collision GOAL_PALETTE exists to prevent (5th goal would land on white if Card 2 used the
+  // plain 5-color donutColor instead). This is the one behavior the doc comments describe but
+  // that, before this test, nothing actually exercised.
+  const r3b = await renderAndCapture({
+    incomeSources: [{ id: 'inc1', name: 'Fizetés', amount: 500000 }],
+    mandatory: [], discretionary: [],
+    savings: [
+      { id: 's1', name: 'Cél 1', icon: '🏠', saved: 100000, target: 1000000 },
+      { id: 's2', name: 'Cél 2', icon: '🚗', saved: 100000, target: 1000000 },
+      { id: 's3', name: 'Cél 3', icon: '🎓', saved: 100000, target: 1000000 },
+      { id: 's4', name: 'Cél 4', icon: '🏖️', saved: 100000, target: 1000000 },
+      { id: 's5', name: 'Cél 5', icon: '💍', saved: 100000, target: 1000000 },
+    ],
+    accounts: [
+      { id: 'acc-savings', name: 'Megtakarítási számla', icon: '🏦', type: 'savings', balance: 500000 },
+    ],
+  });
+  {
+    const seg = r3b.savings && r3b.savings.segments;
+    const ok = r3b.savings && seg.length === 5 // no unallocated row (balance === sum(saved))
+      && seg.every((s, i) => s.color === goalColor(i))
+      && seg[4].color === seg[0].color // wraps back to GOAL_PALETTE's own 1st color...
+      && seg.every(s => s.color !== '#EDE9DD') // ...and NEVER white, unlike plain donutColor(4)
+      && donutColor(4) === '#EDE9DD'; // sanity check: this really would be white under the plain 5-color palette
+    results.push({ name: 'Card 2: 5 goals -> goalColor wraps at index 4 without ever reusing white (the bug GOAL_PALETTE was built to prevent)', pass: ok, detail: JSON.stringify(seg && seg.map(s => s.color)) });
   }
 
   // 4) Card 2: zero savings-type accounts -> graceful fallback text, no crash.

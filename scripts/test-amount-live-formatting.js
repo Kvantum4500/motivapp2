@@ -5,20 +5,21 @@ const PORT = 8948;
 const BASE = `http://127.0.0.1:${PORT}/index.html`;
 const APP_DIR = __dirname + '/..';
 
-// NOTE on the separator character: Number.prototype.toLocaleString('hu-HU') in this
-// Chromium/ICU build (same engine the app itself runs in) uses U+00A0 (NO-BREAK SPACE),
-// not a plain U+0020 space, as the thousands separator - and it only actually groups
-// digits once the number reaches 5 digits (e.g. 1234 -> "1234", but 12345 -> "12 345").
-// Both quirks are inherited as-is from the app's own existing `.toLocaleString('hu-HU')`
-// calls (the same ones used to render "150 000 Ft" on cards elsewhere) - this feature's
-// job is to match that exact formatting live, not to invent a different one, so the
-// expected values below use ' ' and 5+ digit test numbers to exercise real grouping.
+// NOTE on the separator character: fmtFtInput() (index.html) uses U+00A0 (NO-BREAK SPACE)
+// as the thousands separator, matching the rest of the app's `.toLocaleString('hu-HU')`
+// calls (e.g. "150 000 Ft" on cards elsewhere). It groups from 4 digits up (via
+// `new Intl.NumberFormat('hu-HU',{useGrouping:true})`, deliberately NOT bare
+// `Number.prototype.toLocaleString('hu-HU')`, which in this Chromium/ICU build only groups
+// once a number reaches 5 digits - e.g. `(1234).toLocaleString('hu-HU')` -> "1234", no
+// separator - failing the very "5000 -> 5.000 while typing" case this feature exists for.
 const NBSP = ' ';
 
 (async () => {
   const server = spawn('python3', ['-m', 'http.server', String(PORT)], { cwd: APP_DIR, stdio: 'pipe' });
+  let browser;
+  try {
   await new Promise(r => setTimeout(r, 1000));
-  const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', args: ['--no-sandbox', '--headless=new'] });
+  browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome', args: ['--no-sandbox', '--headless=new'] });
   const page = await browser.newPage();
   const errs = [];
   page.on('console', m => { if (m.type()==='error') errs.push(m.text()); });
@@ -34,30 +35,32 @@ const NBSP = ' ';
   const regFails = reg.filter(x => x['Eredmény'] !== 'PASS');
   results.push({name:'runRegressionChecks() 16/16 unaffected', pass: regFails.length===0, detail: JSON.stringify({total:reg.length, fails:regFails.length})});
 
-  // 1) Income (inc-val): type "12345" char by char, assert live-formatted display at each
-  //    keystroke, then save and confirm the plain numeric value lands in App.state.
-  await page.evaluate(() => { editIncomeSheet(); });
-  const incEl = await page.$('#inc-val');
+  // 1) Income source (inc-amount, addIncomeSourceSheet/saveIncomeSource): type "12345" char by
+  //    char, assert live-formatted display at each keystroke, then save and confirm the plain
+  //    numeric value lands in the new finance.incomeSources array (replaced the old flat
+  //    monthlyIncome field/editIncomeSheet()/saveIncome() - see PR #66).
+  await page.evaluate(() => { addIncomeSourceSheet(); document.getElementById('inc-name').value = 'Teszt forrás'; });
+  const incEl = await page.$('#inc-amount');
   await incEl.click();
   const incStages = [];
   for (const ch of '12345') {
     await page.keyboard.type(ch);
     incStages.push(await incEl.inputValue());
   }
-  await page.evaluate(() => saveIncome());
-  const incSaved = await page.evaluate(() => App.state.finance.monthlyIncome);
-  const incExpected = ['1','12','123','1234','12'+NBSP+'345'];
-  results.push({name:'inc-val live-formats while typing "12345" -> grouped as "12 345" (NBSP) once it reaches 5 digits', pass: JSON.stringify(incStages)===JSON.stringify(incExpected), detail: 'got '+JSON.stringify(incStages)+' expected '+JSON.stringify(incExpected)});
-  results.push({name:'inc-val: saved App.state value is plain number 12345 (not corrupted by the separator)', pass: incSaved===12345, detail: 'monthlyIncome='+incSaved});
+  await page.evaluate(() => saveIncomeSource());
+  const incSaved = await page.evaluate(() => App.state.finance.incomeSources.find(x=>x.name==='Teszt forrás').amount);
+  const incExpected = ['1','12','123','1'+NBSP+'234','12'+NBSP+'345'];
+  results.push({name:'inc-amount live-formats while typing "12345" -> grouped as "12 345" (NBSP) once it reaches 5 digits', pass: JSON.stringify(incStages)===JSON.stringify(incExpected), detail: 'got '+JSON.stringify(incStages)+' expected '+JSON.stringify(incExpected)});
+  results.push({name:'inc-amount: saved App.state value is plain number 12345 (not corrupted by the separator)', pass: incSaved===12345, detail: 'amount='+incSaved});
 
-  // 2) Editing an EXISTING amount: pre-filled sheet shows it already formatted, not raw digits.
+  // 2) Editing an EXISTING income source: pre-filled sheet shows it already formatted, not raw digits.
   const prefillCheck = await page.evaluate(() => {
-    App.state.finance.monthlyIncome = 150000;
-    editIncomeSheet();
-    return document.getElementById('inc-val').value;
+    App.state.finance.incomeSources.push({id:'fmt-test-inc', name:'Fizetés teszt', amount:150000});
+    manageIncomeSourceSheet('fmt-test-inc');
+    return document.getElementById('inc-edit-amount').value;
   });
   const prefillExpected = '150'+NBSP+'000';
-  results.push({name:'editIncomeSheet() pre-fills existing 150000 as "150 000" (already formatted on open)', pass: prefillCheck===prefillExpected, detail: 'value='+JSON.stringify(prefillCheck)});
+  results.push({name:'manageIncomeSourceSheet() pre-fills existing 150000 as "150 000" (already formatted on open)', pass: prefillCheck===prefillExpected, detail: 'value='+JSON.stringify(prefillCheck)});
   await page.evaluate(() => closeSheet());
 
   // 3) Discretionary edit (dc-edit-limit / dc-edit-spent): confirm pre-fill formatting for a
@@ -125,8 +128,11 @@ const NBSP = ' ';
   results.push({name:'ai-sugg-amount-0-0 live-formats "48000" -> "48 000" (helper attached via [id^="ai-sugg-amount-"] after re-render)', pass: aiStages[aiStages.length-1]===aiExpectedLast, detail: 'stages='+JSON.stringify(aiStages)});
 
   await page.evaluate(() => { App.state.rpg = App.state.rpg||{}; acceptAiSuggestion(0,0); });
-  const aiApplied = await page.evaluate(() => App.state.finance.monthlyIncome);
-  results.push({name:'accepting AI income suggestion applies plain number 48000 to App.state (not corrupted by the separator)', pass: aiApplied===48000, detail: 'monthlyIncome='+aiApplied});
+  const aiApplied = await page.evaluate(() => {
+    const item = App.state.finance.incomeSources.find(x=>x.name==='Fizetés');
+    return item && item.amount;
+  });
+  results.push({name:'accepting AI income suggestion applies plain number 48000 to the canonical "Fizetés" incomeSources entry (not corrupted by the separator)', pass: aiApplied===48000, detail: 'amount='+aiApplied});
 
   // 6) Cursor-position sanity: type "150000", move cursor into the middle with ArrowLeft,
   //    type an extra digit, and confirm it lands where the human positioned the cursor
@@ -154,8 +160,12 @@ const NBSP = ' ';
 
   const anyFail = results.some(r=>!r.pass) || errs.length>0;
   console.log('\n'+(anyFail?'SOME FAILED':'ALL PASS'));
-
-  await browser.close();
-  server.kill();
   process.exitCode = anyFail ? 1 : 0;
-})().catch(e => { console.error('TEST FAILED:', e); process.exitCode = 1; });
+  } catch (e) {
+    console.error('TEST FAILED:', e);
+    process.exitCode = 1;
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+    server.kill();
+  }
+})();
