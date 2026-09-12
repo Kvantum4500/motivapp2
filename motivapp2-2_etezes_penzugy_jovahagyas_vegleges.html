@@ -374,12 +374,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.28';
+const APP_VERSION = '2.2.29';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.28';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.29';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -5643,12 +5643,34 @@ RENDERERS.finance = function(){
   const discPlanned = Math.max(0, discLimitTotal - discSpent); // hátralévő, még el nem költött keret
   const freeRemaining = totalIncome - mandTotal - discLimitTotal; // a TELJES tervezett kerettel (nem csak az eddig elköltöttel) számolt, valóban szabad/le nem kötött pénz, a bevételi források ÖSSZEGÉBŐL
 
+  /* DONUT_PALETTE/donutColor: az 5 törzsszín (ld. --trail-* CSS-változók) ciklikus
+     kiosztása egy-egy donut TETSZŐLEGES számú szegmenséhez (megtakarítási cél / számla),
+     nem csak a fix 4 szegmenses "Folyószámla" donuthoz - 6+ elem esetén a színek
+     körbefordulnak (i % 5). Card 2 (Megtakarítási számla) és Card 3 (Teljes kép)
+     is ugyanezt a helpert használja, hogy a ciklus-logika egy helyen éljen. */
+  const DONUT_PALETTE = ['#4A85AC','#D9A441','#5C8F62','#C1432B','#EDE9DD'];
+  const donutColor = i => DONUT_PALETTE[i % DONUT_PALETTE.length];
+
+  // Card 2 (🏦 Megtakarítási számla): a megtakarítási TÍPUSÚ számlák valós egyenlegének
+  // (finance.accounts, type==='savings') megoszlása a megtakarítási CÉLOK (finance.savings)
+  // között - ld. defaultState() doksiját: a kettő egymástól FÜGGETLENÜL szerkeszthető, ezért
+  // a célok saved-összege és a számlaegyenleg összege NEM garantáltan egyezik.
+  const savingsAccounts = (f.accounts||[]).filter(a=>a.type==='savings');
+  const totalSavingsBalance = savingsAccounts.reduce((s,a)=>s+(a.balance||0),0);
+  const totalGoalsSaved = (f.savings||[]).reduce((s,g)=>s+(g.saved||0),0);
+  const unallocated = Math.max(0, totalSavingsBalance - totalGoalsSaved); // ha a célok összege meghaladja az egyenleget, ez 0 - a cél-szegmenseket ettől nem csonkoljuk
+
+  // Card 3 (📊 Teljes kép): az ÖSSZES számla (típustól függetlenül) egyenlegének egymáshoz
+  // viszonyított aránya - "hol van a pénzem" portfólió-nézet.
+  const allAccounts = f.accounts||[];
+  const grandTotal = allAccounts.reduce((s,a)=>s+(a.balance||0),0);
+
   const attekintesHtml = `
     <div class="card">
       <div class="flex between center" style="margin-bottom:6px;">
-        <div class="card-title">Havi áttekintés</div>
+        <div class="card-title">💳 Folyószámla</div>
       </div>
-      <div style="max-width:190px;margin:6px auto;"><canvas id="chart-donut" height="190"></canvas></div>
+      <div style="max-width:190px;margin:6px auto;"><canvas id="chart-donut-checking" height="190"></canvas></div>
       <div class="hr"></div>
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-green"></span>Fizetés</span><span class="mono small">${totalIncome.toLocaleString('hu-HU')} Ft</span></div>
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-blue"></span>Kötelező kiadás</span><span class="mono small">${mandTotal.toLocaleString('hu-HU')} Ft</span></div>
@@ -5665,6 +5687,35 @@ RENDERERS.finance = function(){
       </div>
     </div>`).join('')}
     <div class="small" style="margin:-6px 0 18px;color:var(--trail-yellow);cursor:pointer;" onclick="addIncomeSourceSheet()">+ Új bevételi forrás hozzáadása</div>
+
+    <div class="card">
+      <div class="flex between center" style="margin-bottom:6px;">
+        <div class="card-title">🏦 Megtakarítási számla</div>
+      </div>
+      <div style="max-width:190px;margin:6px auto;"><canvas id="chart-donut-savings" height="190"></canvas></div>
+      <div class="hr"></div>
+      ${savingsAccounts.length===0 ? `
+      <div class="small muted" style="padding:8px 0;text-align:center;">Nincs megtakarítási számlád — vegyél fel egyet a SZÁMLÁK fülön.</div>
+      ` : `
+      ${(f.savings||[]).map(g=>`<div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span style="font-size:14px;">${escapeHtml(g.icon||'🏦')}</span>${escapeHtml(g.name)}</span><span class="mono small">${(g.saved||0).toLocaleString('hu-HU')} Ft</span></div>`).join('')}
+      ${unallocated>0?`<div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-white"></span>Nem konkrét célra félretett</span><span class="mono small">${unallocated.toLocaleString('hu-HU')} Ft</span></div>`:''}
+      <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small" style="font-weight:700;">Megtakarítási egyenleg összesen</span><span class="mono small" style="font-weight:700;">${totalSavingsBalance.toLocaleString('hu-HU')} Ft</span></div>
+      `}
+    </div>
+
+    <div class="card">
+      <div class="flex between center" style="margin-bottom:6px;">
+        <div class="card-title">📊 Teljes kép</div>
+      </div>
+      <div style="max-width:190px;margin:6px auto;"><canvas id="chart-donut-total" height="190"></canvas></div>
+      <div class="hr"></div>
+      ${allAccounts.length===0 ? `
+      <div class="small muted" style="padding:8px 0;text-align:center;">Még nincs felvett számlád.</div>
+      ` : `
+      ${allAccounts.map(a=>`<div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span style="font-size:14px;">${escapeHtml(a.icon||'💳')}</span>${escapeHtml(a.name)}</span><span class="mono small">${(a.balance||0).toLocaleString('hu-HU')} Ft</span></div>`).join('')}
+      <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small" style="font-weight:700;">Mindösszesen</span><span class="mono small" style="font-weight:700;">${grandTotal.toLocaleString('hu-HU')} Ft</span></div>
+      `}
+    </div>
 
     <div class="sectiontitle">Kiadások megoszlása</div>
     <div class="card">${renderExpenseDistribution(f)}</div>
@@ -5760,13 +5811,30 @@ RENDERERS.finance = function(){
 
   if(App.ui.financeTab==='attekintes'){
     requestAnimationFrame(()=>{
-      const canvas = document.getElementById('chart-donut');
-      if(canvas) drawDonutChart(canvas, [
+      // Mindhárom canvas lekérése egyenként, saját if(canvas) őrrel - egy globális renderApp()
+      // futás közben elméletileg rákaphat egy fültváltásra, ami közben eltünteti az ÁTTEKINTÉS
+      // al-fület a DOM-ból (ld. drawDonutChart()/setupCanvas() dokumentációját a negatív
+      // sugárral kapcsolatban) - ez ugyanaz a védelmi minta, mint a régi, egyetlen donutnál.
+      const canvasChecking = document.getElementById('chart-donut-checking');
+      if(canvasChecking) drawDonutChart(canvasChecking, [
         {value:Math.max(0,freeRemaining), color:'#5C8F62'},   // Jelenlegi szabad pénz (var(--trail-green))
         {value:mandTotal, color:'#4A85AC'},                     // Kötelező kiadás (var(--trail-blue))
         {value:discSpent, color:'#D9A441'},                     // Egyéb kiadás - elköltött (var(--trail-yellow))
         {value:discPlanned, color:'#EDE9DD'},                    // Egyéb kiadás - tervezett/hátralévő keret (var(--trail-white))
       ], 'SZABAD PÉNZ', freeRemaining.toLocaleString('hu-HU')+' Ft');
+
+      const canvasSavings = document.getElementById('chart-donut-savings');
+      if(canvasSavings){
+        const savingsSegs = (f.savings||[]).map((g,i)=>({value:g.saved||0, color:donutColor(i)}));
+        if(unallocated>0) savingsSegs.push({value:unallocated, color:'#EDE9DD'});
+        drawDonutChart(canvasSavings, savingsSegs, 'MEGTAKARÍTÁS', totalSavingsBalance.toLocaleString('hu-HU')+' Ft');
+      }
+
+      const canvasTotal = document.getElementById('chart-donut-total');
+      if(canvasTotal){
+        const acctSegs = allAccounts.map((a,i)=>({value:a.balance||0, color:donutColor(i)}));
+        drawDonutChart(canvasTotal, acctSegs, 'ÖSSZESEN', grandTotal.toLocaleString('hu-HU')+' Ft');
+      }
     });
   }
 };

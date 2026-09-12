@@ -25,14 +25,22 @@ const APP_DIR = __dirname + '/..';
   results.push({name:'runRegressionChecks() 16/16 unaffected', pass: regFails.length===0, detail: JSON.stringify({total:reg.length, fails:regFails.length})});
 
   // Helper: set finance state, switch to attekintes tab, spy on drawDonutChart, render, and read back DOM text.
+  // NOTE (three-donuts feature): RENDERERS.finance() now draws THREE donuts per render
+  // (Folyószámla/checking, Megtakarítási számla, Teljes kép), so a spy that just keeps
+  // overwriting a single `captured` var would end up holding whichever of the three was
+  // drawn LAST, not necessarily the checking-account one this file's hand-computed
+  // assertions are about. We collect every call and pick out the one whose centerLabel is
+  // 'SZABAD PÉNZ' - that label is unique to the checking-account donut and unchanged by
+  // this feature - so `captured` keeps meaning exactly what it meant before, independent of
+  // draw order or how many donuts a future change adds.
   async function renderAndCapture(financeState) {
     return await page.evaluate((fin) => {
       App.state.finance = fin;
       App.ui.financeTab = 'attekintes';
-      let captured = null;
+      const allCalls = [];
       const orig = drawDonutChart;
       window.drawDonutChart = function(canvas, segments, centerLabel, centerValue) {
-        captured = { segments: segments.map(s=>({value:s.value, color:s.color})), centerLabel, centerValue };
+        allCalls.push({ segments: segments.map(s=>({value:s.value, color:s.color})), centerLabel, centerValue });
         return orig.apply(this, arguments);
       };
       RENDERERS.finance();
@@ -40,9 +48,10 @@ const APP_DIR = __dirname + '/..';
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
             window.drawDonutChart = orig;
+            const captured = allCalls.find(c => c.centerLabel === 'SZABAD PÉNZ') || null;
             const rows = Array.from(document.querySelectorAll('#view-finance .card .flex.between'))
               .map(el => el.textContent.trim());
-            resolve({ captured, rows, html: document.getElementById('view-finance').innerHTML });
+            resolve({ captured, allCalls, rows, html: document.getElementById('view-finance').innerHTML });
           });
         });
       });
