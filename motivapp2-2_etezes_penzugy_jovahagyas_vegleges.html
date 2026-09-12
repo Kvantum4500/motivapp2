@@ -374,12 +374,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.26';
+const APP_VERSION = '2.2.27';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.26';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.27';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -519,6 +519,16 @@ function defaultState(){
         {id:'s2',name:'Lakáscél',icon:'🏦',saved:0,target:5000000},
         {id:'s3',name:'Vésztartalék',icon:'🏦',saved:0,target:500000},
       ],
+      // accounts: valós bankszámla-egyenlegek ("számla" = pénzösszeg-tároló,
+      // FÜGGETLEN a fenti savings[] cél/haladás-követéstől). A `balance` mezőt
+      // a felhasználó közvetlenül állítja be/módosítja (manageAccountSheet()),
+      // pont úgy, mint a discretionary.spent / savings.saved mezőket - NINCS
+      // automatikus levonás/befizetés a monthlyIncome/mandatory/discretionary
+      // felől, ld. RENDERERS.finance SZÁMLÁK al-fül doksiját.
+      accounts:[
+        {id:'acc-checking',name:'Folyószámla',icon:'💳',type:'checking',balance:0},
+        {id:'acc-savings',name:'Megtakarítási számla',icon:'🏦',type:'savings',balance:0},
+      ],
       foodOrders:[], // {id,amount,rawText,date,appliedToDiscretionaryId} - banki/Foodora értesítésből rögzített ételrendelések
       spendLedger:[], // {id,categoryId,amount,date,source} - könnyű napló csak dedup-ellenőrzéshez, ld. recordSpendAndCheckDup()
     },
@@ -614,6 +624,11 @@ function normalizeAppState(){
   }
   if(!Array.isArray(App.state.finance.foodOrders)) App.state.finance.foodOrders = d.finance.foodOrders;
   if(!Array.isArray(App.state.finance.spendLedger)) App.state.finance.spendLedger = d.finance.spendLedger;
+  /* finance.accounts (SZÁMLÁK): meglévő felhasználóknál (akiknek elmentett
+     állapotában ez a mező még nem létezett) 0 egyenlegű alap-számlapárral
+     töltjük fel - a VALÓS egyenleget nem ismerjük, azt a felhasználó a
+     manageAccountSheet()-en állítja be kézzel. */
+  if(!Array.isArray(App.state.finance.accounts)) App.state.finance.accounts = d.finance.accounts;
   if(!App.state.skills || typeof App.state.skills !== 'object') App.state.skills = {};
   if(!App.state.aiPerm || typeof App.state.aiPerm !== 'object') App.state.aiPerm = d.aiPerm;
   if(!App.state.healthConnect || typeof App.state.healthConnect !== 'object') App.state.healthConnect = d.healthConnect;
@@ -890,6 +905,7 @@ function isLocalStateTrivial(){
     if(JSON.stringify(s.finance.mandatory||[]) !== JSON.stringify(d0.finance.mandatory)) return false;
     if(JSON.stringify(s.finance.discretionary||[]) !== JSON.stringify(d0.finance.discretionary)) return false;
     if(JSON.stringify(s.finance.savings||[]) !== JSON.stringify(d0.finance.savings)) return false;
+    if(JSON.stringify(s.finance.accounts||[]) !== JSON.stringify(d0.finance.accounts)) return false;
   }
   if(s.rpg && s.rpg.meta && s.rpg.meta.name) return false;
   if(s.rpg && Array.isArray(s.rpg.weeks) && s.rpg.weeks.some(w=>w && Array.isArray(w.quests) && w.quests.length)) return false;
@@ -1775,6 +1791,7 @@ function sanitizeImportedIdsAndIcons(state){
     state.finance && state.finance.discretionary,
     state.finance && state.finance.savings,
     state.finance && state.finance.foodOrders,
+    state.finance && state.finance.accounts,
   ];
   idIconArrays.forEach(arr=>{
     if(!Array.isArray(arr)) return;
@@ -5587,6 +5604,7 @@ function financeTopToggleHtml(){
       <div class="subtab ${App.ui.financeTab==='attekintes'?'active':''}" role="button" tabindex="0" onclick="setFinanceTab('attekintes')" onkeydown="kbActivate(event,()=>setFinanceTab('attekintes'))">🔎 ÁTTEKINTÉS</div>
       <div class="subtab ${App.ui.financeTab==='kiadasok'?'active':''}" role="button" tabindex="0" onclick="setFinanceTab('kiadasok')" onkeydown="kbActivate(event,()=>setFinanceTab('kiadasok'))">💳 KIADÁSOK</div>
       <div class="subtab ${App.ui.financeTab==='megtakaritas'?'active':''}" role="button" tabindex="0" onclick="setFinanceTab('megtakaritas')" onkeydown="kbActivate(event,()=>setFinanceTab('megtakaritas'))">🏦 MEGTAKARÍTÁS</div>
+      <div class="subtab ${App.ui.financeTab==='szamlak'?'active':''}" role="button" tabindex="0" onclick="setFinanceTab('szamlak')" onkeydown="kbActivate(event,()=>setFinanceTab('szamlak'))">💳 SZÁMLÁK</div>
     </div>`;
 }
 function setFinanceTab(v){ App.ui.financeTab=v; RENDERERS.finance(); }
@@ -5675,8 +5693,32 @@ RENDERERS.finance = function(){
     <div class="small" style="margin:-6px 0 18px;color:var(--trail-yellow);cursor:pointer;" onclick="addSavingsSheet()">+ Új megtakarítási cél</div>
   `;
 
+  /* szamlakHtml (SZÁMLÁK al-fül): a fenti mandatory/discretionary/savings
+     tervezéstől/követéstől FÜGGETLEN, valós bankszámla-egyenlegek nézete
+     (ld. finance.accounts doksiját defaultState()-nél). SZÁNDÉKOSAN nem
+     olvas be/ír ki semmit a monthlyIncome/mandatory/discretionary felől -
+     az egyenlegeket a felhasználó kézzel állítja be (manageAccountSheet())
+     vagy a "🔁 Utalás" (transferBetweenAccountsSheet()) mozgatja őket egymás
+     között. Egy KÉSŐBBI fázis épít majd ezekre az egyenlegekre új
+     donut-nézeteket az ÁTTEKINTÉS al-fülön - ez a fázis csak az adatmodellt
+     és a kezelő UI-t adja. */
+  const accountsList = f.accounts||[];
+  const szamlakHtml = `
+    <div class="sectiontitle">💳 Számlák</div>
+    ${accountsList.map(x=>`<div class="card">
+      <div class="flex between center">
+        <span class="flex gap8 center"><span style="font-size:16px;">${escapeHtml(x.icon||'💳')}</span><span style="font-weight:700;font-size:14px;">${escapeHtml(x.name)}</span></span>
+        <span class="flex gap8 center"><span class="pill ${x.type==='savings'?'pill-green':'pill-blue'}">${x.type==='savings'?'Megtakarítási':'Folyószámla'}</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" onclick="manageAccountSheet('${x.id}')">⋯</span></span>
+      </div>
+      <div class="flex between" style="margin:10px 0 2px;"><span class="mono" style="font-size:17px;font-weight:700;">${(x.balance||0).toLocaleString('hu-HU')} Ft</span></div>
+    </div>`).join('')}
+    <div class="small" style="margin:-6px 0 18px;color:var(--trail-yellow);cursor:pointer;" onclick="addAccountSheet()">+ Új számla hozzáadása</div>
+    <button class="btn btn-primary btn-block" onclick="transferBetweenAccountsSheet()" style="margin-bottom:18px;">🔁 Utalás számlák között</button>
+  `;
+
   const bodyHtml = App.ui.financeTab==='kiadasok' ? kiadasokHtml
     : App.ui.financeTab==='megtakaritas' ? megtakaritasHtml
+    : App.ui.financeTab==='szamlak' ? szamlakHtml
     : attekintesHtml;
 
   document.getElementById('view-finance').innerHTML = subHeader('Pénzügyek') + financeTopToggleHtml() + bodyHtml;
@@ -6149,6 +6191,153 @@ function moveFinanceItem(kind,id,direction){
   saveState(); RENDERERS.finance();
 }
 
+/* ===== SZÁMLÁK (finance.accounts) + UTALÁS SZÁMLÁK KÖZÖTT =====
+   Ugyanazt a "manageXSheet szerkeszt+mozgat+töröl, saveXEdits közvetlenül
+   beállít (nem hozzáad)" mintát követi, mint manageDiscretionarySheet()/
+   manageSavingsSheet() - ld. a doksijukat fent. Az egyenleg (balance) itt is
+   KÖZVETLENÜL beállítható (nem csak növelhető), mert egy meglévő
+   felhasználó a valódi banki egyenlegét kézzel viszi be egyszer, utána a
+   transferBetweenAccountsSheet()-en keresztüli utalások tartják naprakészen. */
+function manageAccountSheet(id){
+  const x=App.state.finance.accounts.find(i=>i.id===id); if(!x) return;
+  const idx=App.state.finance.accounts.findIndex(i=>i.id===id);
+  const len=App.state.finance.accounts.length;
+  openSheet(`<div class="sheet-head"><div class="sheet-title">${escapeHtml(x.name)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+    <div class="field"><label>Megnevezés</label><input type="text" id="acc-edit-name" value="${escapeHtml(x.name)}"></div>
+    <div class="field"><label>Ikon (emoji)</label><input type="text" id="acc-edit-icon" value="${escapeHtml(x.icon||'💳')}" maxlength="16" style="width:70px;font-size:20px;text-align:center;"></div>
+    <div class="field"><label>Típus</label><div class="chiprow" id="acc-edit-type"><div class="chip ${x.type==='savings'?'':'active'}" data-v="checking">Folyószámla</div><div class="chip ${x.type==='savings'?'active':''}" data-v="savings">Megtakarítási számla</div></div></div>
+    <div class="field"><label>Jelenlegi egyenleg (Ft)</label><input type="text" inputmode="numeric" id="acc-edit-balance" value="${fmtFtInput(x.balance||0)}" style="font-size:20px;text-align:center;padding:16px;"></div>
+    <button class="btn btn-primary btn-block" onclick="saveAccountEdits('${id}')">Mentés</button>
+    <div class="hr"></div>
+    <div class="flex gap8" style="margin-top:10px;">
+      <button class="btn btn-ghost btn-sm" style="flex:1;${idx===0?'opacity:0.35;cursor:not-allowed;':''}" ${idx===0?'disabled':''} onclick="moveFinanceItem('accounts','${id}',-1);closeSheet();">⬆️ Feljebb</button>
+      <button class="btn btn-ghost btn-sm" style="flex:1;${idx===len-1?'opacity:0.35;cursor:not-allowed;':''}" ${idx===len-1?'disabled':''} onclick="moveFinanceItem('accounts','${id}',1);closeSheet();">⬇️ Lejjebb</button>
+    </div>
+    <button class="btn btn-danger btn-sm btn-block" style="margin-top:8px;" onclick="removeFinanceItem('accounts','${id}');closeSheet();">🗑️ Törlés</button>`);
+  document.querySelectorAll('#acc-edit-type .chip').forEach(c=>c.addEventListener('click',()=>{
+    document.querySelectorAll('#acc-edit-type .chip').forEach(x2=>x2.classList.remove('active')); c.classList.add('active');
+  }));
+  formatAmountInputLive(document.getElementById('acc-edit-balance'));
+}
+function saveAccountEdits(id){
+  const x=App.state.finance.accounts.find(i=>i.id===id); if(!x) return;
+  const name=(document.getElementById('acc-edit-name').value||'').trim();
+  if(!name){ toast('Adj meg egy nevet'); return; }
+  const icon=(document.getElementById('acc-edit-icon').value||'').trim();
+  const typeChip=document.querySelector('#acc-edit-type .chip.active');
+  const type=typeChip? typeChip.dataset.v : x.type;
+  const balance=parseAmountInput(document.getElementById('acc-edit-balance').value);
+  if(balance<0){ toast('Az egyenleg nem lehet negatív'); return; }
+  x.name=name;
+  x.icon=icon||(type==='savings'?'🏦':'💳');
+  x.type=type;
+  x.balance=balance;
+  saveState(); closeSheet(); toast('Mentve'); RENDERERS.finance();
+}
+function addAccountSheet(){
+  const hasChecking = App.state.finance.accounts.some(a=>a.type==='checking');
+  const defaultType = hasChecking ? 'savings' : 'checking';
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Új számla</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+    <div class="field"><label>Megnevezés</label><input type="text" id="acc-name" placeholder="Pl. Befektetési számla"></div>
+    <div class="field"><label>Típus</label><div class="chiprow" id="acc-type"><div class="chip ${defaultType==='checking'?'active':''}" data-v="checking">Folyószámla</div><div class="chip ${defaultType==='savings'?'active':''}" data-v="savings">Megtakarítási számla</div></div></div>
+    <div class="field"><label>Kezdő egyenleg (Ft)</label><input type="text" inputmode="numeric" id="acc-balance"></div>
+    <button class="btn btn-primary btn-block" onclick="saveAccount()">Mentés</button>`);
+  document.querySelectorAll('#acc-type .chip').forEach(c=>c.addEventListener('click',()=>{
+    document.querySelectorAll('#acc-type .chip').forEach(x=>x.classList.remove('active')); c.classList.add('active');
+  }));
+  formatAmountInputLive(document.getElementById('acc-balance'));
+}
+function saveAccount(){
+  const name=document.getElementById('acc-name').value.trim();
+  if(!name){ toast('Adj meg egy nevet'); return; }
+  const typeChip=document.querySelector('#acc-type .chip.active');
+  const type=typeChip? typeChip.dataset.v : 'checking';
+  const balance=parseAmountInput(document.getElementById('acc-balance').value);
+  if(balance<0){ toast('Az érték nem lehet negatív'); return; }
+  App.state.finance.accounts.push({id:uid(),name,icon:type==='savings'?'🏦':'💳',type,balance});
+  saveState(); closeSheet(); toast('Hozzáadva'); RENDERERS.finance();
+}
+
+/* transferBetweenAccountsSheet(): két számla (chiprow-választó, ld. a fájlban
+   máshol is használt "Honnan/Hova"-jellegű mintát, pl. mn-type/bn-cat) közötti
+   utalás. A "Mire teszed félre?" cél-választó chip-sáv (#tr-goal-section)
+   DINAMIKUSAN frissül a "Hova" választás módosulásakor (refreshTransferGoalSection())
+   - csak akkor jelenik meg, ha a JELENLEG kiválasztott célszámla type==='savings',
+   így a felhasznaló sosem lát értelmetlen célválasztót egy folyószámla-célnál.
+   A cél választása MINDIG opcionális (alapértelmezett: "Nincs konkrét cél / Egyéb"
+   chip aktív) - ld. a felhasználó saját megfogalmazását a jegyben. */
+function transferBetweenAccountsSheet(){
+  const accounts = App.state.finance.accounts||[];
+  if(accounts.length<2){ toast('Legalább két számla kell az utaláshoz'); return; }
+  const defaultFrom = accounts.find(a=>a.type==='checking') || accounts[0];
+  const defaultTo = accounts.find(a=>a.id!==defaultFrom.id && a.type==='savings') || accounts.find(a=>a.id!==defaultFrom.id) || accounts[1];
+  const chipsHtml = (selectedId)=>accounts.map(a=>`<div class="chip ${a.id===selectedId?'active':''}" data-id="${escapeHtml(a.id)}">${escapeHtml(a.icon||'💳')} ${escapeHtml(a.name)}</div>`).join('');
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Utalás számlák között</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+    <div class="field"><label>Honnan</label><div class="chiprow" id="tr-from">${chipsHtml(defaultFrom.id)}</div></div>
+    <div class="field"><label>Hova</label><div class="chiprow" id="tr-to">${chipsHtml(defaultTo.id)}</div></div>
+    <div class="field"><label>Összeg (Ft)</label><input type="text" inputmode="numeric" id="tr-amount" style="font-size:20px;text-align:center;padding:16px;" placeholder="Ft"></div>
+    <div id="tr-goal-section"></div>
+    <button class="btn btn-primary btn-block" onclick="saveTransfer()">Utalás</button>`);
+  document.querySelectorAll('#tr-from .chip').forEach(c=>c.addEventListener('click',()=>{
+    document.querySelectorAll('#tr-from .chip').forEach(x=>x.classList.remove('active')); c.classList.add('active');
+  }));
+  document.querySelectorAll('#tr-to .chip').forEach(c=>c.addEventListener('click',()=>{
+    document.querySelectorAll('#tr-to .chip').forEach(x=>x.classList.remove('active')); c.classList.add('active');
+    refreshTransferGoalSection();
+  }));
+  formatAmountInputLive(document.getElementById('tr-amount'));
+  refreshTransferGoalSection();
+}
+function refreshTransferGoalSection(){
+  const section = document.getElementById('tr-goal-section');
+  if(!section) return;
+  const toChip = document.querySelector('#tr-to .chip.active');
+  const toAccount = toChip ? App.state.finance.accounts.find(a=>a.id===toChip.dataset.id) : null;
+  const goals = App.state.finance.savings||[];
+  if(!toAccount || toAccount.type!=='savings' || !goals.length){
+    section.innerHTML='';
+    return;
+  }
+  section.innerHTML = `<div class="field"><label>Mire teszed félre?</label><div class="chiprow" id="tr-goal">
+    <div class="chip active" data-id="">Nincs konkrét cél / Egyéb</div>
+    ${goals.map(g=>`<div class="chip" data-id="${escapeHtml(g.id)}">${escapeHtml(g.icon||'🏦')} ${escapeHtml(g.name)}</div>`).join('')}
+  </div></div>`;
+  document.querySelectorAll('#tr-goal .chip').forEach(c=>c.addEventListener('click',()=>{
+    document.querySelectorAll('#tr-goal .chip').forEach(x=>x.classList.remove('active')); c.classList.add('active');
+  }));
+}
+function saveTransfer(){
+  const fromChip = document.querySelector('#tr-from .chip.active');
+  const toChip = document.querySelector('#tr-to .chip.active');
+  if(!fromChip || !toChip){ toast('Válassz számlát'); return; }
+  const fromId = fromChip.dataset.id, toId = toChip.dataset.id;
+  if(fromId===toId){ toast('A forrás és a cél számla nem lehet ugyanaz'); return; }
+  const fromAcc = App.state.finance.accounts.find(a=>a.id===fromId);
+  const toAcc = App.state.finance.accounts.find(a=>a.id===toId);
+  if(!fromAcc || !toAcc){ toast('Számla nem található'); return; }
+  const amount = parseAmountInput(document.getElementById('tr-amount').value);
+  if(!amount || amount<=0){ toast('Adj meg egy érvényes összeget'); return; }
+  if(amount > (fromAcc.balance||0)){ toast('Nincs elég egyenleg ezen a számlán'); return; }
+  fromAcc.balance = (fromAcc.balance||0) - amount;
+  toAcc.balance = (toAcc.balance||0) + amount;
+  let goalName = null;
+  if(toAcc.type==='savings'){
+    const goalChip = document.querySelector('#tr-goal .chip.active');
+    const goalId = goalChip ? goalChip.dataset.id : '';
+    if(goalId){
+      const goal = App.state.finance.savings.find(g=>g.id===goalId);
+      if(goal){
+        goal.saved = (goal.saved||0) + amount;
+        checkSavingsGoalMilestone(goal); // parity a saveSavingsAdd()/saveSavingsEdits() hívásával
+        goalName = goal.name;
+      }
+    }
+  }
+  saveState(); closeSheet();
+  toast('Elutalva '+amount.toLocaleString('hu-HU')+' Ft: '+fromAcc.name+' → '+toAcc.name+(goalName?' (cél: '+goalName+')':''));
+  RENDERERS.finance();
+}
+
 
 App.ui.nutView = App.ui.nutView || 'nap';
 App.ui.nutRef = App.ui.nutRef || todayISO();
@@ -6542,6 +6731,7 @@ function applyImportedJson(text){
   if(!Array.isArray(next.finance.savings)) next.finance.savings = d.finance.savings;
   if(!Array.isArray(next.finance.foodOrders)) next.finance.foodOrders = d.finance.foodOrders;
   if(!Array.isArray(next.finance.spendLedger)) next.finance.spendLedger = d.finance.spendLedger;
+  if(!Array.isArray(next.finance.accounts)) next.finance.accounts = d.finance.accounts;
   for(const k of ['tasks','events','workouts','weightLog','healthLog','journeys','journal','aiChat','activities','customSports','customSkillNodes']){
     if(!Array.isArray(next[k])) next[k] = d[k];
   }
