@@ -374,12 +374,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.30';
+const APP_VERSION = '2.2.31';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.30';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.31';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -628,6 +628,8 @@ function normalizeAppState(){
   for(const k of ['tasks','events','workouts','weightLog','healthLog','journeys','journal','aiChat']){
     if(!Array.isArray(App.state[k])) App.state[k] = d[k];
   }
+  if(!Array.isArray(App.state.finance.discretionary)) App.state.finance.discretionary = d.finance.discretionary;
+  if(!Array.isArray(App.state.finance.savings)) App.state.finance.savings = d.finance.savings;
   if(!Array.isArray(App.state.finance.foodOrders)) App.state.finance.foodOrders = d.finance.foodOrders;
   if(!Array.isArray(App.state.finance.spendLedger)) App.state.finance.spendLedger = d.finance.spendLedger;
   /* finance.accounts (SZÁMLÁK): meglévő felhasználóknál (akiknek elmentett
@@ -1808,6 +1810,7 @@ function sanitizeImportedIdsAndIcons(state){
     state.finance && state.finance.savings,
     state.finance && state.finance.foodOrders,
     state.finance && state.finance.accounts,
+    state.finance && state.finance.incomeSources,
   ];
   idIconArrays.forEach(arr=>{
     if(!Array.isArray(arr)) return;
@@ -5645,10 +5648,11 @@ RENDERERS.finance = function(){
   const freeRemaining = checkingBalance - mandTotal - discLimitTotal; // a TELJES tervezett kerettel (nem csak az eddig elköltöttel) számolt, valóban szabad/le nem kötött pénz, a VALÓS folyószámla-egyenlegből (checkingBalance) - lásd Card 2/3, amik ugyanígy a finance.accounts valós egyenlegeiből számolnak
 
   /* DONUT_PALETTE/donutColor: az 5 törzsszín (ld. --trail-* CSS-változók) ciklikus
-     kiosztása egy-egy donut TETSZŐLEGES számú szegmenséhez (megtakarítási cél / számla),
-     nem csak a fix 4 szegmenses "Folyószámla" donuthoz - 6+ elem esetén a színek
-     körbefordulnak (i % 5). Card 2 (Megtakarítási számla) és Card 3 (Teljes kép)
-     is ugyanezt a helpert használja, hogy a ciklus-logika egy helyen éljen. */
+     kiosztása egy-egy donut TETSZŐLEGES számú szegmenséhez (pl. számla), nem csak a
+     fix 4 szegmenses "Folyószámla" donuthoz - 6+ elem esetén a színek körbefordulnak
+     (i % 5). Csak Card 3 (Teljes kép) használja közvetlenül - Card 2 (Megtakarítási
+     számla) a lentebbi GOAL_PALETTE/goalColor-t használja, ami ebből származik, de a
+     fehért kihagyja (ld. az ottani doksit, miért NEM ugyanaz a két helper). */
   const DONUT_PALETTE = ['#4A85AC','#D9A441','#5C8F62','#C1432B','#EDE9DD'];
   const donutColor = i => DONUT_PALETTE[i % DONUT_PALETTE.length];
   /* GOAL_PALETTE: a Card 2 (Megtakarítási számla) cél-szegmensei a fehért ('#EDE9DD')
@@ -6870,7 +6874,7 @@ function applyImportedJson(text){
   const parsed = JSON.parse(text);
   if(!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid root');
   const d = defaultState();
-  const next = Object.assign(d, parsed);
+  const next = Object.assign({}, d, parsed);
   /* Mélyebb ellenőrzés/pótlás a loadState() mintája alapján, kiterjesztve */
   if(!next.finance || typeof next.finance !== 'object' || !Array.isArray(next.finance.mandatory)){
     const oldIncome = (next.finance && next.finance.monthlyIncome) || 0;
