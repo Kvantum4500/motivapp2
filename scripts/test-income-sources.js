@@ -78,9 +78,18 @@ const APP_DIR = __dirname + '/..';
   await page.waitForTimeout(400);
 
   // 4) ÁTTEKINTÉS renders the "Bevételi forrásaid" section with the default source, and the
-  //    freeRemaining/"Fizetés" row reflect the SUM after adding a second income source.
+  //    "Fizetés" summary row reflects the SUM after adding a second income source.
+  // NOTE (checking-account-balance fix, separate later change): "Jelenlegi szabad pénz"
+  // (freeRemaining) is now driven by the REAL checking-account balance (finance.accounts,
+  // type==='checking'), not by the sum of incomeSources - see index.html's
+  // checkingBalance/freeRemaining and scripts/test-finance-donut-planned.js for the dedicated
+  // tests of that fix/decoupling. This fixture sets an explicit checking-account balance
+  // (kept fixed while incomeSources changes below) so the freeRemaining assertion continues to
+  // test something real, instead of silently drifting to "whatever the default 0-balance
+  // account produces".
   const twoSources = await page.evaluate(() => {
     App.state.finance.incomeSources = [{id:'inc1', name:'Fizetés', amount:400000}];
+    App.state.finance.accounts = [{id:'acc-checking', name:'Folyószámla', icon:'💳', type:'checking', balance:300000}];
     App.state.finance.mandatory = [{id:'m1', name:'Bérlet', icon:'🏠', amount:100000, type:'fix'}];
     App.state.finance.discretionary = [{id:'d1', name:'Étkezés', icon:'🍔', spent:20000, limit:30000}];
     App.ui.financeTab = 'attekintes';
@@ -93,7 +102,8 @@ const APP_DIR = __dirname + '/..';
     saveIncomeSource();
     const after = document.getElementById('view-finance').innerHTML;
     const totalIncome = App.state.finance.incomeSources.reduce((s,x)=>s+(x.amount||0),0);
-    const freeRemaining = totalIncome - 100000 - 30000;
+    const checkingBalance = App.state.finance.accounts.filter(a=>a.type==='checking').reduce((s,a)=>s+(a.balance||0),0);
+    const freeRemaining = checkingBalance - 100000 - 30000; // unaffected by adding the second income source - proves the decoupling in passing
     return {
       hasSectionTitle: before.includes('Bevételi forrásaid'),
       hasDefaultCardBefore: before.includes('Fizetés') && before.includes('400 000 Ft'.replace(' ',' ')) || before.includes('400 000 Ft'),
@@ -113,7 +123,7 @@ const APP_DIR = __dirname + '/..';
   // that and a real NBSP to a plain space before comparing.
   const normSep = s => (s||'').trim().replace(/&nbsp;/g,' ').replace(/ /g,' ');
   results.push({
-    name:'"Fizetés" summary row and "Jelenlegi szabad pénz" row reflect the SUM of all income sources, not just one',
+    name:'"Fizetés" summary row reflects the SUM of all income sources, not just one, while "Jelenlegi szabad pénz" stays UNCHANGED (now checking-account-balance-driven, decoupled from incomeSources)',
     pass: normSep(twoSources.afterFizetesRow) === twoSources.totalIncome.toLocaleString('hu-HU').replace(/ /g,' ')
        && normSep(twoSources.afterFreeRow) === twoSources.freeRemaining.toLocaleString('hu-HU').replace(/ /g,' '),
     detail: JSON.stringify({afterFizetesRow:twoSources.afterFizetesRow, expectedTotal:twoSources.totalIncome.toLocaleString('hu-HU'), afterFreeRow:twoSources.afterFreeRow, expectedFree:twoSources.freeRemaining.toLocaleString('hu-HU')})

@@ -374,12 +374,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.29';
+const APP_VERSION = '2.2.30';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.29';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.30';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -5636,12 +5636,13 @@ function financeTopToggleHtml(){
 function setFinanceTab(v){ App.ui.financeTab=v; RENDERERS.finance(); }
 RENDERERS.finance = function(){
   const f = App.state.finance;
-  const totalIncome = (f.incomeSources||[]).reduce((s,x)=>s+(x.amount||0),0);
+  const totalIncome = (f.incomeSources||[]).reduce((s,x)=>s+(x.amount||0),0); // csak INFORMATÍV: a bevárt bevétel összege, ld. lentebb - NEM folyik bele a freeRemaining számításba
+  const checkingBalance = (f.accounts||[]).filter(a=>a.type==='checking').reduce((s,a)=>s+(a.balance||0),0); // a valós, kézzel karbantartott folyószámla-egyenleg (finance.accounts) - EZ hajtja a Card 1 donutot/összegzést, nem a totalIncome
   const mandTotal = f.mandatory.reduce((s,x)=>s+(x.amount||0),0);
   const discSpent = f.discretionary.reduce((s,x)=>s+(x.spent||0),0);
   const discLimitTotal = f.discretionary.reduce((s,x)=>s+(x.limit||0),0);
   const discPlanned = Math.max(0, discLimitTotal - discSpent); // hátralévő, még el nem költött keret
-  const freeRemaining = totalIncome - mandTotal - discLimitTotal; // a TELJES tervezett kerettel (nem csak az eddig elköltöttel) számolt, valóban szabad/le nem kötött pénz, a bevételi források ÖSSZEGÉBŐL
+  const freeRemaining = checkingBalance - mandTotal - discLimitTotal; // a TELJES tervezett kerettel (nem csak az eddig elköltöttel) számolt, valóban szabad/le nem kötött pénz, a VALÓS folyószámla-egyenlegből (checkingBalance) - lásd Card 2/3, amik ugyanígy a finance.accounts valós egyenlegeiből számolnak
 
   /* DONUT_PALETTE/donutColor: az 5 törzsszín (ld. --trail-* CSS-változók) ciklikus
      kiosztása egy-egy donut TETSZŐLEGES számú szegmenséhez (megtakarítási cél / számla),
@@ -5680,6 +5681,7 @@ RENDERERS.finance = function(){
       <div style="max-width:190px;margin:6px auto;"><canvas id="chart-donut-checking" height="190"></canvas></div>
       <div class="hr"></div>
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-green"></span>Fizetés</span><span class="mono small">${totalIncome.toLocaleString('hu-HU')} Ft</span></div>
+      <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span style="font-size:13px;">💳</span>Folyószámla egyenleg</span><span class="mono small">${checkingBalance.toLocaleString('hu-HU')} Ft</span></div>
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-blue"></span>Kötelező kiadás</span><span class="mono small">${mandTotal.toLocaleString('hu-HU')} Ft</span></div>
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-yellow"></span>Egyéb kiadás – elköltött</span><span class="mono small">${discSpent.toLocaleString('hu-HU')} Ft</span></div>
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-white"></span>Egyéb kiadás – tervezett (hátralévő keret)</span><span class="mono small">${discPlanned.toLocaleString('hu-HU')} Ft</span></div>
