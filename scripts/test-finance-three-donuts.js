@@ -54,19 +54,28 @@ const donutColor = i => DONUT_PALETTE[i % DONUT_PALETTE.length];
     }, financeState);
   }
 
-  // 1) Card 1 (Folyószámla / checking donut) regression: identical segment values/colors to
-  // before this feature, for a known state (same fixture shape as test-finance-donut-planned.js).
+  // 1) Card 1 (Folyószámla / checking donut) regression: identical segment values/colors/canvas
+  // id/label shape to before THIS (three-donuts) feature, for a known state.
+  // NOTE (checking-account-balance fix, separate later change): Card 1's freeRemaining is now
+  // driven by the REAL checking-account balance (finance.accounts, type==='checking'), not by
+  // incomeSources - see index.html's checkingBalance/freeRemaining and
+  // scripts/test-finance-donut-planned.js for the dedicated tests of that fix. This fixture is
+  // updated in place (rather than left "unmodified") to add a checking account, since the old
+  // accounts:[] + incomeSources-only shape now exercises the checkingBalance===0 fallback path
+  // instead of the intended balance-driven one - the donut mechanics being tested here (4 fixed
+  // segments/colors/canvas id/center label) are otherwise untouched by that fix.
   const r1 = await renderAndCapture({
-    incomeSources: [{ id: 'inc1', name: 'Fizetés', amount: 400000 }],
+    incomeSources: [{ id: 'inc1', name: 'Fizetés', amount: 999999 }], // deliberately different from the checking balance below - informational only, no longer drives freeRemaining
     mandatory: [{ id: 'm1', name: 'Bérlet', icon: '🏠', amount: 150000, type: 'fix' }],
     discretionary: [{ id: 'd1', name: 'Étkezés', icon: '🍔', spent: 30000, limit: 50000 }],
     savings: [],
-    accounts: [],
+    accounts: [{ id: 'a1', name: 'Folyószámla', icon: '💳', type: 'checking', balance: 400000 }],
   });
   {
     const mandTotal = 150000, discSpent = 30000, discLimitTotal = 50000;
     const discPlanned = Math.max(0, discLimitTotal - discSpent); // 20000
-    const freeRemaining = 400000 - mandTotal - discLimitTotal; // 200000
+    const checkingBalance = 400000;
+    const freeRemaining = checkingBalance - mandTotal - discLimitTotal; // 200000
     const seg = r1.checking && r1.checking.segments;
     const ok = r1.checking && r1.checking.canvasId === 'chart-donut-checking' && seg.length === 4
       && seg[0].value === freeRemaining && seg[0].color === '#5C8F62'
