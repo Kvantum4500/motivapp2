@@ -5650,6 +5650,13 @@ RENDERERS.finance = function(){
      is ugyanezt a helpert használja, hogy a ciklus-logika egy helyen éljen. */
   const DONUT_PALETTE = ['#4A85AC','#D9A441','#5C8F62','#C1432B','#EDE9DD'];
   const donutColor = i => DONUT_PALETTE[i % DONUT_PALETTE.length];
+  /* GOAL_PALETTE: a Card 2 (Megtakarítási számla) cél-szegmensei a fehért ('#EDE9DD')
+     KIHAGYVA ciklizálnak - az a szín kizárólag a "Nem konkrét célra félretett" szegmensé
+     (ld. lentebb). Ha a cél-szegmensek is a teljes 5-ös DONUT_PALETTE-et használnák, 5,
+     10, 15... cél esetén az utolsó cél ugyanazt a fehéret kapná, mint az "unallocated"
+     szegmens - a két, egymás melletti szelet megkülönböztethetetlenné válna a diagramon. */
+  const GOAL_PALETTE = DONUT_PALETTE.filter(c=>c!=='#EDE9DD');
+  const goalColor = i => GOAL_PALETTE[i % GOAL_PALETTE.length];
 
   // Card 2 (🏦 Megtakarítási számla): a megtakarítási TÍPUSÚ számlák valós egyenlegének
   // (finance.accounts, type==='savings') megoszlása a megtakarítási CÉLOK (finance.savings)
@@ -5825,7 +5832,7 @@ RENDERERS.finance = function(){
 
       const canvasSavings = document.getElementById('chart-donut-savings');
       if(canvasSavings){
-        const savingsSegs = (f.savings||[]).map((g,i)=>({value:g.saved||0, color:donutColor(i)}));
+        const savingsSegs = (f.savings||[]).map((g,i)=>({value:g.saved||0, color:goalColor(i)}));
         if(unallocated>0) savingsSegs.push({value:unallocated, color:'#EDE9DD'});
         drawDonutChart(canvasSavings, savingsSegs, 'MEGTAKARÍTÁS', totalSavingsBalance.toLocaleString('hu-HU')+' Ft');
       }
