@@ -50,8 +50,14 @@ const APP_DIR = __dirname + '/..';
   }
 
   // 1) Empty discretionary (no categories at all)
+  // NOTE: these fixtures now set incomeSources (an array) instead of the old flat monthlyIncome
+  // number - RENDERERS.finance() no longer reads monthlyIncome at all after the "multiple income
+  // sources" feature (see index.html's totalIncome/freeRemaining), so a fixture still only setting
+  // monthlyIncome would silently test a freeRemaining of 0-mandTotal-discLimitTotal instead of the
+  // real income figure. Each fixture below uses a single income source carrying the same amount
+  // the old monthlyIncome value did, so every hand-computed expectation in this file stays correct.
   const emptyDisc = await renderAndCapture({
-    monthlyIncome: 300000,
+    incomeSources: [{id:'inc1', name:'Fizetés', amount:300000}],
     mandatory: [{id:'m1', name:'Bérlet', icon:'🏠', amount:120000, type:'fix'}],
     discretionary: [],
     savings: [],
@@ -72,7 +78,7 @@ const APP_DIR = __dirname + '/..';
 
   // 2) Discretionary over limit (both single category over, and aggregate over)
   const overLimit = await renderAndCapture({
-    monthlyIncome: 400000,
+    incomeSources: [{id:'inc1', name:'Fizetés', amount:400000}],
     mandatory: [{id:'m1', name:'Bérlet', icon:'🏠', amount:150000, type:'fix'}],
     discretionary: [
       {id:'d1', name:'Étkezés', icon:'🍔', spent:60000, limit:40000}, // over limit
@@ -93,9 +99,9 @@ const APP_DIR = __dirname + '/..';
     results.push({name:'over-limit discretionary: spent row shows aggregate 65 000 Ft', pass: overLimit.rows.some(r=>r.includes('Egyéb kiadás – elköltött')), detail: JSON.stringify(overLimit.rows)});
   }
 
-  // 3) monthlyIncome 0 (never set) -> freeRemaining negative, donut segment clamps to 0, text row shows real negative number in red
+  // 3) income 0 (never set, empty incomeSources) -> freeRemaining negative, donut segment clamps to 0, text row shows real negative number in red
   const zeroIncome = await renderAndCapture({
-    monthlyIncome: 0,
+    incomeSources: [],
     mandatory: [{id:'m1', name:'Bérlet', icon:'🏠', amount:80000, type:'fix'}],
     discretionary: [{id:'d1', name:'Étkezés', icon:'🍔', spent:10000, limit:20000}],
     savings: [],
@@ -116,7 +122,7 @@ const APP_DIR = __dirname + '/..';
 
   // 4) Realistic mid-range case: hand-computed cross-check of all 4 numbers
   const mid = await renderAndCapture({
-    monthlyIncome: 550000,
+    incomeSources: [{id:'inc1', name:'Fizetés', amount:400000}, {id:'inc2', name:'Melléklás', amount:150000}],
     mandatory: [
       {id:'m1', name:'Bérlet', icon:'🏠', amount:180000, type:'fix'},
       {id:'m2', name:'Áram', icon:'💡', amount:25000, type:'variable'},

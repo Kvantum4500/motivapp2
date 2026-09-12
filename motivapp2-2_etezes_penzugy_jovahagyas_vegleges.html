@@ -374,12 +374,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.27';
+const APP_VERSION = '2.2.28';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.27';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.28';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -497,7 +497,13 @@ function defaultState(){
     weightLog:[],
     healthLog:[], // {date, sleepH, steps, pulse}
     nutrition:{targets:{kcal:2600,protein:170,carbs:280,fat:80},log:[]},
-    finance:{monthlyIncome:0,
+    finance:{monthlyIncome:0, // VESTIGIÁLIS: mostantól csak a két legacy schema-migrációs ág (normalizeAppState()/
+      // applyImportedJson() "oldIncome" pótlása egy nagyon régi, mandatory-tömb NÉLKÜLI mentésből) olvassa,
+      // élő számítás/megjelenítés SEHOL nem használja - ld. finance.incomeSources lent.
+      incomeSources:[ // Bevételi forrásaid (ÁTTEKINTÉS al-fül) - a monthlyIncome flat számot váltja fel, hogy
+        // több bevételi forrás (fizetés + melléklás + egyéb rendszeres bevétel) is felvehető legyen.
+        {id:'inc1',name:'Fizetés',amount:0},
+      ],
       mandatory:[
         {id:'m1',name:'Bérleti díj',icon:'🏠',amount:0,type:'fix'},
         {id:'m2',name:'Áram',icon:'⚡',amount:0,type:'valtozo'},
@@ -629,6 +635,16 @@ function normalizeAppState(){
      töltjük fel - a VALÓS egyenleget nem ismerjük, azt a felhasználó a
      manageAccountSheet()-en állítja be kézzel. */
   if(!Array.isArray(App.state.finance.accounts)) App.state.finance.accounts = d.finance.accounts;
+  /* finance.incomeSources: meglévő felhasználóknál, akiknek elmentett állapotában ez a mező
+     még nem létezett (csak a régi flat finance.monthlyIncome), a MÁR BEÁLLÍTOTT bevétel-számot
+     az első ("Fizetés") bevételi forrássá alakítjuk át, hogy ne vesszen el - ld. a feature-leírást.
+     Ha a felhasználó sosem állított be bevételt (monthlyIncome 0), a defaultState() ugyanolyan
+     "Fizetés" alapértelmezett forrást ad (0 összeggel), mint egy vadonatúj felhasználónak - NEM
+     egy külön/bogus 0-s tétel, hanem pontosan a defaultState() sablonja. */
+  if(!Array.isArray(App.state.finance.incomeSources)){
+    const legacyIncome = App.state.finance.monthlyIncome||0;
+    App.state.finance.incomeSources = legacyIncome>0 ? [{id:'inc1',name:'Fizetés',amount:legacyIncome}] : d.finance.incomeSources;
+  }
   if(!App.state.skills || typeof App.state.skills !== 'object') App.state.skills = {};
   if(!App.state.aiPerm || typeof App.state.aiPerm !== 'object') App.state.aiPerm = d.aiPerm;
   if(!App.state.healthConnect || typeof App.state.healthConnect !== 'object') App.state.healthConnect = d.healthConnect;
@@ -887,7 +903,6 @@ function isLocalStateTrivial(){
   if(s.profile && s.profile.name) return false;
   const nonEmptyArrays = ['tasks','events','workouts','activities','journeys','journal','weightLog','healthLog','customSports','customSkillNodes'];
   for(const k of nonEmptyArrays){ if(Array.isArray(s[k]) && s[k].length) return false; }
-  if(s.finance && s.finance.monthlyIncome) return false;
   if(s.finance && Array.isArray(s.finance.foodOrders) && s.finance.foodOrders.length) return false;
   /* Korábban ez az ellenőrzés NEM nézte a kötelező/egyéb kiadás/megtakarítás
      tételeket (finance.mandatory/discretionary/savings) - egy felhasználó,
@@ -906,6 +921,7 @@ function isLocalStateTrivial(){
     if(JSON.stringify(s.finance.discretionary||[]) !== JSON.stringify(d0.finance.discretionary)) return false;
     if(JSON.stringify(s.finance.savings||[]) !== JSON.stringify(d0.finance.savings)) return false;
     if(JSON.stringify(s.finance.accounts||[]) !== JSON.stringify(d0.finance.accounts)) return false;
+    if(JSON.stringify(s.finance.incomeSources||[]) !== JSON.stringify(d0.finance.incomeSources)) return false;
   }
   if(s.rpg && s.rpg.meta && s.rpg.meta.name) return false;
   if(s.rpg && Array.isArray(s.rpg.weeks) && s.rpg.weeks.some(w=>w && Array.isArray(w.quests) && w.quests.length)) return false;
@@ -5257,10 +5273,20 @@ function _applyActivityTemplateSuggestion(s){
   return 'Minta mentve · '+applied+' jövőbeli '+(DAY_TYPE_SHORT[s.dayType]||s.dayType)+' napra felkerült ✓';
 }
 
+/* _applyIncomeSuggestion: a "Havi bevétel/fizetés beállítása X Ft-ra" AI-javaslatot mostantól a
+   kanonikus "Fizetés" nevű finance.incomeSources tételre alkalmazza (find-or-create névre, ugyanazzal
+   a normFin()-alapú mintával, mint _applyFinanceSuggestion() a mandatory tételeknél) - NEM a vestigiális
+   finance.monthlyIncome mezőt írja többé. Ha a felhasználó átnevezte/törölte az alapértelmezett
+   "Fizetés" forrást, egy új jön létre ugyanezzel a névvel. */
 function _applyIncomeSuggestion(s){
   App.state.finance = App.state.finance || defaultState().finance;
-  App.state.finance.monthlyIncome = Number(s.amount)||0;
-  return 'Havi bevétel frissítve: '+App.state.finance.monthlyIncome.toLocaleString('hu-HU')+' Ft ✓';
+  App.state.finance.incomeSources = Array.isArray(App.state.finance.incomeSources) ? App.state.finance.incomeSources : [];
+  const target = normFin('Fizetés');
+  let item = App.state.finance.incomeSources.find(x=>normFin(x.name)===target);
+  if(!item){ item={id:uid(),name:'Fizetés',amount:0}; App.state.finance.incomeSources.push(item); }
+  item.amount = Number(s.amount)||0;
+  const totalIncome = App.state.finance.incomeSources.reduce((sum,x)=>sum+(x.amount||0),0);
+  return 'Havi bevétel frissítve: '+item.name+' '+item.amount.toLocaleString('hu-HU')+' Ft (összesen '+totalIncome.toLocaleString('hu-HU')+' Ft) ✓';
 }
 
 function _applySchedulePatternSuggestion(s){
@@ -5610,26 +5636,35 @@ function financeTopToggleHtml(){
 function setFinanceTab(v){ App.ui.financeTab=v; RENDERERS.finance(); }
 RENDERERS.finance = function(){
   const f = App.state.finance;
+  const totalIncome = (f.incomeSources||[]).reduce((s,x)=>s+(x.amount||0),0);
   const mandTotal = f.mandatory.reduce((s,x)=>s+(x.amount||0),0);
   const discSpent = f.discretionary.reduce((s,x)=>s+(x.spent||0),0);
   const discLimitTotal = f.discretionary.reduce((s,x)=>s+(x.limit||0),0);
   const discPlanned = Math.max(0, discLimitTotal - discSpent); // hátralévő, még el nem költött keret
-  const freeRemaining = (f.monthlyIncome||0) - mandTotal - discLimitTotal; // a TELJES tervezett kerettel (nem csak az eddig elköltöttel) számolt, valóban szabad/le nem kötött pénz
+  const freeRemaining = totalIncome - mandTotal - discLimitTotal; // a TELJES tervezett kerettel (nem csak az eddig elköltöttel) számolt, valóban szabad/le nem kötött pénz, a bevételi források ÖSSZEGÉBŐL
 
   const attekintesHtml = `
     <div class="card">
       <div class="flex between center" style="margin-bottom:6px;">
         <div class="card-title">Havi áttekintés</div>
-        <span class="small" style="color:var(--trail-yellow);cursor:pointer;" onclick="editIncomeSheet()">✏️ Fizetés</span>
       </div>
       <div style="max-width:190px;margin:6px auto;"><canvas id="chart-donut" height="190"></canvas></div>
       <div class="hr"></div>
-      <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-green"></span>Fizetés</span><span class="mono small">${(f.monthlyIncome||0).toLocaleString('hu-HU')} Ft</span></div>
+      <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-green"></span>Fizetés</span><span class="mono small">${totalIncome.toLocaleString('hu-HU')} Ft</span></div>
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-blue"></span>Kötelező kiadás</span><span class="mono small">${mandTotal.toLocaleString('hu-HU')} Ft</span></div>
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-yellow"></span>Egyéb kiadás – elköltött</span><span class="mono small">${discSpent.toLocaleString('hu-HU')} Ft</span></div>
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-white"></span>Egyéb kiadás – tervezett (hátralévő keret)</span><span class="mono small">${discPlanned.toLocaleString('hu-HU')} Ft</span></div>
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small" style="font-weight:700;"><span class="dot dot-green"></span>Jelenlegi szabad pénz</span><span class="mono small" style="font-weight:700;color:${freeRemaining>=0?'var(--trail-green)':'var(--trail-red)'};">${freeRemaining.toLocaleString('hu-HU')} Ft</span></div>
     </div>
+
+    <div class="sectiontitle">Bevételi forrásaid</div>
+    ${(f.incomeSources||[]).map(x=>`<div class="card">
+      <div class="flex between center">
+        <span class="flex gap8 center"><span style="font-size:16px;">💰</span><span class="row-title" style="font-weight:700;font-size:14px;">${escapeHtml(x.name)}</span></span>
+        <span class="flex gap8 center"><span class="mono" style="font-size:15px;">${(x.amount||0).toLocaleString('hu-HU')} Ft</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" onclick="manageIncomeSourceSheet('${x.id}')">⋯</span></span>
+      </div>
+    </div>`).join('')}
+    <div class="small" style="margin:-6px 0 18px;color:var(--trail-yellow);cursor:pointer;" onclick="addIncomeSourceSheet()">+ Új bevételi forrás hozzáadása</div>
 
     <div class="sectiontitle">Kiadások megoszlása</div>
     <div class="card">${renderExpenseDistribution(f)}</div>
@@ -5773,13 +5808,51 @@ function drawDonutChart(canvas,segments,centerLabel,centerValue){
   ctx.fillStyle='#EDE9DD'; ctx.font='bold 14px IBM Plex Mono';
   ctx.fillText(centerValue, cx, cy+14);
 }
-function editIncomeSheet(){
-  openSheet(`<div class="sheet-head"><div class="sheet-title">Havi nettó fizetés</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
-    <div class="field"><input type="text" inputmode="numeric" id="inc-val" value="${App.state.finance.monthlyIncome?fmtFtInput(App.state.finance.monthlyIncome):''}" style="font-size:20px;text-align:center;padding:16px;" placeholder="Ft"></div>
-    <button class="btn btn-primary btn-block" onclick="saveIncome()">Mentés</button>`);
-  formatAmountInputLive(document.getElementById('inc-val'));
+/* ===== BEVÉTELI FORRÁSOK (finance.incomeSources) =====
+   Ugyanazt a "manageXSheet szerkeszt+mozgat+töröl, saveXEdits közvetlenül beállít (nem hozzáad)"
+   mintát követi, mint manageAccountSheet()/saveAccountEdits() - ld. a doksijukat fent -, csak
+   típus-választó chip nélkül (egy bevételi forrásnak csak neve és összege van). */
+function manageIncomeSourceSheet(id){
+  const x=App.state.finance.incomeSources.find(i=>i.id===id); if(!x) return;
+  const idx=App.state.finance.incomeSources.findIndex(i=>i.id===id);
+  const len=App.state.finance.incomeSources.length;
+  openSheet(`<div class="sheet-head"><div class="sheet-title">${escapeHtml(x.name)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+    <div class="field"><label>Megnevezés</label><input type="text" id="inc-edit-name" value="${escapeHtml(x.name)}"></div>
+    <div class="field"><label>Havi összeg (Ft)</label><input type="text" inputmode="numeric" id="inc-edit-amount" value="${fmtFtInput(x.amount||0)}" style="font-size:20px;text-align:center;padding:16px;"></div>
+    <button class="btn btn-primary btn-block" onclick="saveIncomeSourceEdits('${id}')">Mentés</button>
+    <div class="hr"></div>
+    <div class="flex gap8" style="margin-top:10px;">
+      <button class="btn btn-ghost btn-sm" style="flex:1;${idx===0?'opacity:0.35;cursor:not-allowed;':''}" ${idx===0?'disabled':''} onclick="moveFinanceItem('incomeSources','${id}',-1);closeSheet();">⬆️ Feljebb</button>
+      <button class="btn btn-ghost btn-sm" style="flex:1;${idx===len-1?'opacity:0.35;cursor:not-allowed;':''}" ${idx===len-1?'disabled':''} onclick="moveFinanceItem('incomeSources','${id}',1);closeSheet();">⬇️ Lejjebb</button>
+    </div>
+    <button class="btn btn-danger btn-sm btn-block" style="margin-top:8px;" onclick="removeFinanceItem('incomeSources','${id}');closeSheet();">🗑️ Törlés</button>`);
+  formatAmountInputLive(document.getElementById('inc-edit-amount'));
 }
-function saveIncome(){ const v=parseAmountInput(document.getElementById('inc-val').value); if(v<0){ toast('Az érték nem lehet negatív'); return; } App.state.finance.monthlyIncome=v; saveState(); closeSheet(); toast('Mentve'); RENDERERS.finance(); }
+function saveIncomeSourceEdits(id){
+  const x=App.state.finance.incomeSources.find(i=>i.id===id); if(!x) return;
+  const name=(document.getElementById('inc-edit-name').value||'').trim();
+  if(!name){ toast('Adj meg egy nevet'); return; }
+  const amount=parseAmountInput(document.getElementById('inc-edit-amount').value);
+  if(amount<0){ toast('Az érték nem lehet negatív'); return; }
+  x.name=name;
+  x.amount=amount;
+  saveState(); closeSheet(); toast('Mentve'); RENDERERS.finance();
+}
+function addIncomeSourceSheet(){
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Új bevételi forrás</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+    <div class="field"><label>Megnevezés</label><input type="text" id="inc-name" placeholder="Pl. Melléklás"></div>
+    <div class="field"><label>Havi összeg (Ft)</label><input type="text" inputmode="numeric" id="inc-amount"></div>
+    <button class="btn btn-primary btn-block" onclick="saveIncomeSource()">Mentés</button>`);
+  formatAmountInputLive(document.getElementById('inc-amount'));
+}
+function saveIncomeSource(){
+  const name=document.getElementById('inc-name').value.trim();
+  if(!name){ toast('Adj meg egy nevet'); return; }
+  const amount=parseAmountInput(document.getElementById('inc-amount').value);
+  if(amount<0){ toast('Az érték nem lehet negatív'); return; }
+  App.state.finance.incomeSources.push({id:uid(),name,amount});
+  saveState(); closeSheet(); toast('Hozzáadva'); RENDERERS.finance();
+}
 function addMandatorySheet(){
   openSheet(`<div class="sheet-head"><div class="sheet-title">Kötelező tétel</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     <div class="field"><label>Megnevezés</label><input type="text" id="mn-name" placeholder="Pl. Biztosítás"></div>
@@ -6732,6 +6805,10 @@ function applyImportedJson(text){
   if(!Array.isArray(next.finance.foodOrders)) next.finance.foodOrders = d.finance.foodOrders;
   if(!Array.isArray(next.finance.spendLedger)) next.finance.spendLedger = d.finance.spendLedger;
   if(!Array.isArray(next.finance.accounts)) next.finance.accounts = d.finance.accounts;
+  if(!Array.isArray(next.finance.incomeSources)){
+    const legacyIncome = next.finance.monthlyIncome||0;
+    next.finance.incomeSources = legacyIncome>0 ? [{id:'inc1',name:'Fizetés',amount:legacyIncome}] : d.finance.incomeSources;
+  }
   for(const k of ['tasks','events','workouts','weightLog','healthLog','journeys','journal','aiChat','activities','customSports','customSkillNodes']){
     if(!Array.isArray(next[k])) next[k] = d[k];
   }
