@@ -142,12 +142,19 @@ const goalColor = i => GOAL_PALETTE[i % GOAL_PALETTE.length];
     ],
   });
   {
+    // Ring reconciliation fix (round-3 code-quality Finding 2): when goals (700000) exceed the
+    // real balance (500000), the ring segments are scaled down proportionally by
+    // 500000/700000 so their sum always matches the displayed center total - otherwise the
+    // ring would render "100% full" while the center label shows a smaller number.
+    const scale = 500000 / 700000;
     const seg = r3.savings && r3.savings.segments;
+    const segSum = seg && seg.reduce((s, x) => s + x.value, 0);
     const ok = r3.savings && seg.length === 2 // no trailing unallocated segment (it's 0)
-      && seg[0].value === 400000 && seg[1].value === 300000
+      && Math.abs(seg[0].value - 400000 * scale) < 0.01 && Math.abs(seg[1].value - 300000 * scale) < 0.01
       && seg.every(s => s.value >= 0)
+      && Math.abs(segSum - 500000) < 0.01 // ring sum reconciles with the real balance shown at center
       && r3.savings.centerValue === (500000).toLocaleString('hu-HU') + ' Ft';
-    results.push({ name: 'Card 2: goals sum > savings balance -> unallocated clamps to 0 (no negative segment, no trailing 0-segment)', pass: ok, detail: JSON.stringify(r3.savings) });
+    results.push({ name: 'Card 2: goals sum > savings balance -> ring segments scaled down to reconcile with the real balance (no negative segment, no trailing 0-segment, ring sum === center total)', pass: ok, detail: JSON.stringify(r3.savings) });
     const noUnallocatedRow = !r3.html.includes('Nem konkrét célra félretett');
     results.push({ name: 'Card 2: unallocated===0 -> "Nem konkrét célra félretett" row is omitted', pass: noUnallocatedRow, detail: 'html should not mention it' });
   }
@@ -252,6 +259,24 @@ const goalColor = i => GOAL_PALETTE[i % GOAL_PALETTE.length];
     const noCrashOk = seg && seg.length === 0 && r7.total.centerValue === (0).toLocaleString('hu-HU') + ' Ft';
     results.push({ name: 'Card 3: zero accounts -> graceful fallback message + empty/zero donut, no crash', pass: fallbackOk && noCrashOk, detail: JSON.stringify({ fallbackOk, total: r7.total }) });
   }
+
+  // 8) Brand-new user (untouched defaultState(), no reload-time overrides): freeRemaining must
+  // be 0, not a false-alarm negative number. This was a real round-3 functional-regression
+  // finding - a fresh user with checkingBalance===0 saw "-130 000 Ft" in red purely because
+  // defaultState()'s seed discretionary categories had non-zero example limits (40000+30000+
+  // 25000+15000+20000=130000) despite the user never having entered a single real number.
+  // Fixed by seeding those limits at 0, matching the existing all-zero mandatory[] pattern.
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForTimeout(400);
+  const fresh = await page.evaluate(() => {
+    App.ui.financeTab = 'attekintes';
+    RENDERERS.finance();
+    const discLimitTotal = App.state.finance.discretionary.reduce((s, x) => s + (x.limit || 0), 0);
+    const row = Array.from(document.querySelectorAll('#view-finance .card .flex.between')).map(el => el.textContent.trim()).find(t => t.includes('Jelenlegi szabad pénz'));
+    return { discLimitTotal, row };
+  });
+  results.push({ name: 'fresh defaultState(): default discretionary limits are all 0 (no false-alarm negative freeRemaining)', pass: fresh.discLimitTotal === 0, detail: 'discLimitTotal=' + fresh.discLimitTotal });
+  results.push({ name: 'fresh defaultState(): "Jelenlegi szabad pénz" row shows 0 Ft, not a negative number', pass: !!fresh.row && fresh.row.includes('0 Ft') && !fresh.row.includes('-'), detail: JSON.stringify(fresh.row) });
 
   console.log('\n=== Három donut (Folyószámla / Megtakarítási számla / Teljes kép) tesztek ===');
   results.forEach(r => console.log((r.pass ? 'PASS' : 'FAIL') + ' - ' + r.name + '  [' + r.detail + ']'));

@@ -150,6 +150,67 @@ const APP_DIR = __dirname + '/..';
   results.push({name:'"Nincs konkrét cél / Egyéb" is the default-selected chip', pass: transferNoGoal.noGoalChipActive==='', detail: 'noGoalChipActive='+JSON.stringify(transferNoGoal.noGoalChipActive)});
   results.push({name:'transfer WITHOUT a goal selected does not change any goal\'s saved amount', pass: JSON.stringify(transferNoGoal.otherGoalsBefore)===JSON.stringify(transferNoGoal.otherGoalsAfter), detail: JSON.stringify(transferNoGoal)});
 
+  // 7b) Symmetric withdrawal: transferring FROM the savings account BACK to checking, with a
+  // goal selected on the "Melyik célból veszed ki?" (Honnan) picker, decrements that goal's
+  // saved by the transferred amount - the round-3 code-quality Finding 3 fix. test-goal-1 is
+  // currently at saved=10000 (reached its target in case 6 above).
+  const withdrawWithGoal = await page.evaluate(() => {
+    const from = App.state.finance.accounts.find(a=>a.id==='acc-savings');
+    const to = App.state.finance.accounts.find(a=>a.id==='acc-checking');
+    const fromBalBefore = from.balance, toBalBefore = to.balance;
+    const goalBefore = App.state.finance.savings.find(g=>g.id==='test-goal-1').saved;
+    transferBetweenAccountsSheet();
+    document.querySelectorAll('#tr-from .chip').forEach(c=>c.classList.remove('active'));
+    document.querySelector('#tr-from .chip[data-id="acc-savings"]').classList.add('active');
+    document.querySelectorAll('#tr-to .chip').forEach(c=>c.classList.remove('active'));
+    document.querySelector('#tr-to .chip[data-id="acc-checking"]').classList.add('active');
+    refreshTransferGoalSection();
+    const fromGoalSectionHasGoal = document.getElementById('tr-from-goal-section').innerHTML.includes('Autó');
+    document.getElementById('tr-amount').value = '3000';
+    document.querySelector('#tr-from-goal .chip[data-id="test-goal-1"]').click();
+    saveTransfer();
+    const goal = App.state.finance.savings.find(g=>g.id==='test-goal-1');
+    return {
+      fromGoalSectionHasGoal,
+      fromBalAfter: from.balance, fromBalBefore,
+      toBalAfter: to.balance, toBalBefore,
+      goalBefore, goalAfter: goal.saved,
+    };
+  });
+  results.push({name:'"Melyik célból veszed ki?" (Honnan) goal chips appear for a savings-type source with a non-zero goal', pass: withdrawWithGoal.fromGoalSectionHasGoal, detail: 'fromGoalSectionHasGoal='+withdrawWithGoal.fromGoalSectionHasGoal});
+  results.push({name:'withdrawal transfer moves balances correctly (savings -> checking)', pass: withdrawWithGoal.fromBalAfter===withdrawWithGoal.fromBalBefore-3000 && withdrawWithGoal.toBalAfter===withdrawWithGoal.toBalBefore+3000, detail: JSON.stringify(withdrawWithGoal)});
+  results.push({name:'withdrawal transfer WITH a from-goal selected decrements that goal\'s saved by the transferred amount', pass: withdrawWithGoal.goalAfter===withdrawWithGoal.goalBefore-3000, detail: 'goalBefore='+withdrawWithGoal.goalBefore+' goalAfter='+withdrawWithGoal.goalAfter});
+
+  // 7c) Withdrawing MORE than a goal's saved amount clamps that goal's saved to 0 (never negative).
+  const withdrawClamp = await page.evaluate(() => {
+    const goal = App.state.finance.savings.find(g=>g.id==='test-goal-1');
+    const goalBefore = goal.saved; // 7000 after case 7b
+    const from = App.state.finance.accounts.find(a=>a.id==='acc-savings');
+    from.balance = Math.max(from.balance, goalBefore + 50000); // ensure enough real balance to attempt the transfer
+    transferBetweenAccountsSheet();
+    document.querySelectorAll('#tr-from .chip').forEach(c=>c.classList.remove('active'));
+    document.querySelector('#tr-from .chip[data-id="acc-savings"]').classList.add('active');
+    document.querySelectorAll('#tr-to .chip').forEach(c=>c.classList.remove('active'));
+    document.querySelector('#tr-to .chip[data-id="acc-checking"]').classList.add('active');
+    refreshTransferGoalSection();
+    document.getElementById('tr-amount').value = String(goalBefore + 5000); // more than the goal has saved
+    document.querySelector('#tr-from-goal .chip[data-id="test-goal-1"]').click();
+    saveTransfer();
+    return { goalBefore, goalAfter: goal.saved };
+  });
+  results.push({name:'withdrawing more than a goal\'s saved amount clamps its saved to 0 (never negative)', pass: withdrawClamp.goalAfter===0, detail: JSON.stringify(withdrawClamp)});
+
+  // 7d) A savings-type source account with only 0-saved goals shows NO "Melyik célból veszed ki?"
+  // picker (nothing sensible to withdraw from) - no crash, section stays empty.
+  const withdrawZeroGoals = await page.evaluate(() => {
+    transferBetweenAccountsSheet();
+    document.querySelectorAll('#tr-from .chip').forEach(c=>c.classList.remove('active'));
+    document.querySelector('#tr-from .chip[data-id="acc-savings"]').classList.add('active');
+    refreshTransferGoalSection();
+    return document.getElementById('tr-from-goal-section').innerHTML;
+  });
+  results.push({name:'no "Melyik célból veszed ki?" picker when all goals are at saved===0 (test-goal-1 clamped to 0 above)', pass: withdrawZeroGoals==='', detail: JSON.stringify(withdrawZeroGoals)});
+
   // 8) A transfer attempt exceeding the source balance is rejected with balances unchanged on both accounts.
   const overdraw = await page.evaluate(() => {
     const from = App.state.finance.accounts.find(a=>a.id==='acc-checking');
