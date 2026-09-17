@@ -12,7 +12,11 @@ const APP_DIR = __dirname + '/..';
 // sanitizeImportedIdsAndIcons() was missing finance.incomeSources from its sanitized-array
 // list (an id-based XSS path via manageIncomeSourceSheet('${x.id}')'s onclick attribute), and
 // normalizeAppState() lacked explicit discretionary/savings Array.isArray guards (inconsistent
-// with applyImportedJson()'s parallel section). This file exercises all three fixes.
+// with applyImportedJson()'s parallel section). Also found via a live user bug report: neither
+// function (nor applyCloudData(), which reuses normalizeAppState()) ever validated that an
+// imported/loaded/synced finance.accounts[].balance is non-negative - unlike the UI forms
+// (saveAccountEdits()/saveAccount()/saveTransfer()), which all guard against it. This file
+// exercises all of the above fixes.
 (async () => {
   const server = spawn('python3', ['-m', 'http.server', String(PORT)], { cwd: APP_DIR, stdio: 'pipe' });
   let browser;
@@ -120,6 +124,64 @@ const APP_DIR = __dirname + '/..';
     const ok = Array.isArray(r4.discretionary) && Array.isArray(r4.savings);
     results.push({ name: 'normalizeAppState(): malformed finance.discretionary/savings backfilled even when finance.mandatory is valid', pass: ok, detail: JSON.stringify(r4) });
   }
+
+  // 5) Negative-balance protection gap (found via a real user bug report: importing an old/
+  // manually-edited JSON backup with a negative finance.accounts[].balance rendered a genuine,
+  // alarming negative "Folyószámla egyenleg" - the only guards against negative balances lived
+  // in the UI forms (saveAccountEdits()/saveAccount()/saveTransfer()), never in the load/import/
+  // cloud-sync paths). applyImportedJson() must clamp a negative imported balance to 0.
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForTimeout(400);
+  const r5 = await page.evaluate(() => {
+    const backup = {
+      finance: {
+        monthlyIncome: 0, mandatory: [], discretionary: [], savings: [],
+        accounts: [
+          { id: 'acc-checking', name: 'Folyószámla', icon: '💳', type: 'checking', balance: -50000 },
+          { id: 'acc-savings', name: 'Megtakarítási számla', icon: '🏦', type: 'savings', balance: -1 },
+        ],
+      },
+    };
+    applyImportedJson(JSON.stringify(backup));
+    App.ui.financeTab = 'attekintes';
+    RENDERERS.finance();
+    const rows = Array.from(document.querySelectorAll('#view-finance .card .flex.between')).map(el => el.textContent.trim());
+    return {
+      balances: App.state.finance.accounts.map(a => a.balance),
+      balanceRow: rows.find(t => t.includes('Folyószámla egyenleg')),
+      freeRemainingRow: rows.find(t => t.includes('Jelenlegi szabad pénz')),
+    };
+  });
+  {
+    const ok = r5.balances.every(b => b === 0) && r5.balanceRow.includes('0 Ft') && !r5.balanceRow.includes('-') && r5.freeRemainingRow.includes('0 Ft') && !r5.freeRemainingRow.includes('-');
+    results.push({ name: 'applyImportedJson(): negative imported account balances clamp to 0, no negative "Folyószámla egyenleg"/"Jelenlegi szabad pénz"', pass: ok, detail: JSON.stringify(r5) });
+  }
+
+  // 6) Same protection via normalizeAppState() directly - covers BOTH loadState() (corrupted/
+  // pre-guard localStorage) and applyCloudData() (a stale/corrupted cloud snapshot from another
+  // device), since both call normalizeAppState() to backfill/validate finance.accounts.
+  const r6 = await page.evaluate(() => {
+    App.state.finance.accounts = [
+      { id: 'acc-checking', name: 'Folyószámla', icon: '💳', type: 'checking', balance: -75000 },
+      { id: 'acc-savings', name: 'Megtakarítási számla', icon: '🏦', type: 'savings', balance: 20000 },
+    ];
+    normalizeAppState();
+    return App.state.finance.accounts.map(a => ({ id: a.id, balance: a.balance }));
+  });
+  {
+    const ok = r6[0].balance === 0 && r6[1].balance === 20000; // only the negative one clamps; the valid positive one is untouched
+    results.push({ name: 'normalizeAppState(): negative account balance clamps to 0 (covers loadState() + applyCloudData()), positive balances untouched', pass: ok, detail: JSON.stringify(r6) });
+  }
+
+  // 7) Malformed (non-numeric) balance also normalizes to 0 rather than propagating NaN/garbage.
+  const r7 = await page.evaluate(() => {
+    App.state.finance.accounts = [
+      { id: 'acc-checking', name: 'Folyószámla', icon: '💳', type: 'checking', balance: 'not-a-number' },
+    ];
+    normalizeAppState();
+    return App.state.finance.accounts[0].balance;
+  });
+  results.push({ name: 'normalizeAppState(): non-numeric balance normalizes to 0, not NaN', pass: r7 === 0, detail: 'balance=' + JSON.stringify(r7) });
 
   console.log('\n=== Import/migráció biztonsági hálójának tesztjei (round-3 data-handling audit fixes) ===');
   results.forEach(r => console.log((r.pass ? 'PASS' : 'FAIL') + ' - ' + r.name + '  [' + r.detail + ']'));

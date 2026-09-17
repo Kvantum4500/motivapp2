@@ -374,12 +374,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.32';
+const APP_VERSION = '2.2.33';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.32';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.33';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -642,6 +642,17 @@ function normalizeAppState(){
      töltjük fel - a VALÓS egyenleget nem ismerjük, azt a felhasználó a
      manageAccountSheet()-en állítja be kézzel. */
   if(!Array.isArray(App.state.finance.accounts)) App.state.finance.accounts = d.finance.accounts;
+  /* Negatív/hibás egyenleg-védelem: a manageAccountSheet()/addAccountSheet()/
+     transferBetweenAccountsSheet() UI-jai mind tiltják a negatív egyenleget
+     (saveAccountEdits()/saveAccount()/saveTransfer() guard-jai), de ez a
+     védelem soha nem terjedt ki a betöltési/import/felhő-útvonalakra - egy
+     régi/kézzel szerkesztett JSON-backup importja, vagy egy sérült
+     localStorage-bejegyzés negatív egyenleggel simán átcsúszott ide, és a
+     Folyószámla donuton/összegzésen valós, riasztó negatív számként jelent
+     meg (ld. a felhasználó által jelentett hibát). A cloud-szinkron is ezen
+     a függvényen megy át (ld. applyCloudData()), így ez a pótlás mindkét
+     betöltési útvonalat lefedi. */
+  App.state.finance.accounts.forEach(acc=>{ acc.balance = Math.max(0, Number(acc.balance)||0); });
   /* finance.incomeSources: meglévő felhasználóknál, akiknek elmentett állapotában ez a mező
      még nem létezett (csak a régi flat finance.monthlyIncome), a MÁR BEÁLLÍTOTT bevétel-számot
      az első ("Fizetés") bevételi forrássá alakítjuk át, hogy ne vesszen el - ld. a feature-leírást.
@@ -6943,6 +6954,10 @@ function applyImportedJson(text){
   if(!Array.isArray(next.finance.foodOrders)) next.finance.foodOrders = d.finance.foodOrders;
   if(!Array.isArray(next.finance.spendLedger)) next.finance.spendLedger = d.finance.spendLedger;
   if(!Array.isArray(next.finance.accounts)) next.finance.accounts = d.finance.accounts;
+  /* Ugyanaz a negatív/hibás egyenleg-védelem, mint normalizeAppState()-ben -
+     ld. az ottani doksit. Ez a függvény NEM hívja normalizeAppState()-et
+     (saját, párhuzamos pótlás-logikája van), ezért itt is kell a pótlás. */
+  next.finance.accounts.forEach(acc=>{ acc.balance = Math.max(0, Number(acc.balance)||0); });
   if(!Array.isArray(next.finance.incomeSources)){
     const legacyIncome = next.finance.monthlyIncome||0;
     next.finance.incomeSources = legacyIncome>0 ? [{id:'inc1',name:'Fizetés',amount:legacyIncome}] : d.finance.incomeSources;
