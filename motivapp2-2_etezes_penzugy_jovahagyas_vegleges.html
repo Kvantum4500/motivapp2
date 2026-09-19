@@ -374,12 +374,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.34';
+const APP_VERSION = '2.2.35';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.34';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.35';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -6015,7 +6015,8 @@ function saveIncomeCredit(id){
   if(v<0){ toast('Az érték nem lehet negatív'); return; }
   const activeChip=document.querySelector('#inc-credit-acct .chip.active');
   const acctId=activeChip? activeChip.dataset.id : document.getElementById('inc-credit-acct-fixed')?.value;
-  const acct=App.state.finance.accounts.find(a=>a.id===acctId); if(!acct) return;
+  const acct=App.state.finance.accounts.find(a=>a.id===acctId);
+  if(!acct){ toast('Válassz egy számlát'); return; }
   acct.balance=(acct.balance||0)+v;
   saveState(); closeSheet(); toast('Jóváírva'); RENDERERS.finance();
 }
