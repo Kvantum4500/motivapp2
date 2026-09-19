@@ -7,6 +7,12 @@ const APP_DIR = __dirname + '/..';
 
 const DONUT_PALETTE = ['#4A85AC', '#D9A441', '#5C8F62', '#C1432B', '#EDE9DD'];
 const donutColor = i => DONUT_PALETTE[i % DONUT_PALETTE.length];
+// GOAL_PALETTE mirrors index.html's own definition (DONUT_PALETTE minus white) - Card 2's
+// goal segments use THIS, not donutColor, specifically so a goal segment can never collide
+// with the white "Nem konkrét célra félretett" segment. Only Card 3 (Teljes kép) uses
+// donutColor directly. Keep this in sync with index.html's GOAL_PALETTE if that ever changes.
+const GOAL_PALETTE = DONUT_PALETTE.filter(c => c !== '#EDE9DD');
+const goalColor = i => GOAL_PALETTE[i % GOAL_PALETTE.length];
 
 (async () => {
   const server = spawn('python3', ['-m', 'http.server', String(PORT)], { cwd: APP_DIR, stdio: 'pipe' });
@@ -107,9 +113,9 @@ const donutColor = i => DONUT_PALETTE[i % DONUT_PALETTE.length];
     const unallocated = totalSavingsBalance - totalGoalsSaved; // 250000
     const seg = r2.savings && r2.savings.segments;
     const ok = r2.savings && seg.length === 4
-      && seg[0].value === 200000 && seg[0].color === donutColor(0)
-      && seg[1].value === 100000 && seg[1].color === donutColor(1)
-      && seg[2].value === 50000 && seg[2].color === donutColor(2)
+      && seg[0].value === 200000 && seg[0].color === goalColor(0)
+      && seg[1].value === 100000 && seg[1].color === goalColor(1)
+      && seg[2].value === 50000 && seg[2].color === goalColor(2)
       && seg[3].value === unallocated && seg[3].color === '#EDE9DD'
       && r2.savings.centerValue === totalSavingsBalance.toLocaleString('hu-HU') + ' Ft';
     results.push({ name: 'Card 2: 3 goals + savings balance > sum(saved) -> correct unallocated segment', pass: ok, detail: JSON.stringify({ expectedUnallocated: unallocated, got: r2.savings }) });
@@ -136,14 +142,50 @@ const donutColor = i => DONUT_PALETTE[i % DONUT_PALETTE.length];
     ],
   });
   {
+    // Ring reconciliation fix (round-3 code-quality Finding 2): when goals (700000) exceed the
+    // real balance (500000), the ring segments are scaled down proportionally by
+    // 500000/700000 so their sum always matches the displayed center total - otherwise the
+    // ring would render "100% full" while the center label shows a smaller number.
+    const scale = 500000 / 700000;
     const seg = r3.savings && r3.savings.segments;
+    const segSum = seg && seg.reduce((s, x) => s + x.value, 0);
     const ok = r3.savings && seg.length === 2 // no trailing unallocated segment (it's 0)
-      && seg[0].value === 400000 && seg[1].value === 300000
+      && Math.abs(seg[0].value - 400000 * scale) < 0.01 && Math.abs(seg[1].value - 300000 * scale) < 0.01
       && seg.every(s => s.value >= 0)
+      && Math.abs(segSum - 500000) < 0.01 // ring sum reconciles with the real balance shown at center
       && r3.savings.centerValue === (500000).toLocaleString('hu-HU') + ' Ft';
-    results.push({ name: 'Card 2: goals sum > savings balance -> unallocated clamps to 0 (no negative segment, no trailing 0-segment)', pass: ok, detail: JSON.stringify(r3.savings) });
+    results.push({ name: 'Card 2: goals sum > savings balance -> ring segments scaled down to reconcile with the real balance (no negative segment, no trailing 0-segment, ring sum === center total)', pass: ok, detail: JSON.stringify(r3.savings) });
     const noUnallocatedRow = !r3.html.includes('Nem konkrét célra félretett');
     results.push({ name: 'Card 2: unallocated===0 -> "Nem konkrét célra félretett" row is omitted', pass: noUnallocatedRow, detail: 'html should not mention it' });
+  }
+
+  // 3b) Card 2: 5 goals (no unallocated remainder) -> goalColor's 4-color GOAL_PALETTE wraps at
+  // index 4 back to its own 1st color, WITHOUT ever landing on white ('#EDE9DD') - the exact
+  // collision GOAL_PALETTE exists to prevent (5th goal would land on white if Card 2 used the
+  // plain 5-color donutColor instead). This is the one behavior the doc comments describe but
+  // that, before this test, nothing actually exercised.
+  const r3b = await renderAndCapture({
+    incomeSources: [{ id: 'inc1', name: 'Fizetés', amount: 500000 }],
+    mandatory: [], discretionary: [],
+    savings: [
+      { id: 's1', name: 'Cél 1', icon: '🏠', saved: 100000, target: 1000000 },
+      { id: 's2', name: 'Cél 2', icon: '🚗', saved: 100000, target: 1000000 },
+      { id: 's3', name: 'Cél 3', icon: '🎓', saved: 100000, target: 1000000 },
+      { id: 's4', name: 'Cél 4', icon: '🏖️', saved: 100000, target: 1000000 },
+      { id: 's5', name: 'Cél 5', icon: '💍', saved: 100000, target: 1000000 },
+    ],
+    accounts: [
+      { id: 'acc-savings', name: 'Megtakarítási számla', icon: '🏦', type: 'savings', balance: 500000 },
+    ],
+  });
+  {
+    const seg = r3b.savings && r3b.savings.segments;
+    const ok = r3b.savings && seg.length === 5 // no unallocated row (balance === sum(saved))
+      && seg.every((s, i) => s.color === goalColor(i))
+      && seg[4].color === seg[0].color // wraps back to GOAL_PALETTE's own 1st color...
+      && seg.every(s => s.color !== '#EDE9DD') // ...and NEVER white, unlike plain donutColor(4)
+      && donutColor(4) === '#EDE9DD'; // sanity check: this really would be white under the plain 5-color palette
+    results.push({ name: 'Card 2: 5 goals -> goalColor wraps at index 4 without ever reusing white (the bug GOAL_PALETTE was built to prevent)', pass: ok, detail: JSON.stringify(seg && seg.map(s => s.color)) });
   }
 
   // 4) Card 2: zero savings-type accounts -> graceful fallback text, no crash.
@@ -217,6 +259,24 @@ const donutColor = i => DONUT_PALETTE[i % DONUT_PALETTE.length];
     const noCrashOk = seg && seg.length === 0 && r7.total.centerValue === (0).toLocaleString('hu-HU') + ' Ft';
     results.push({ name: 'Card 3: zero accounts -> graceful fallback message + empty/zero donut, no crash', pass: fallbackOk && noCrashOk, detail: JSON.stringify({ fallbackOk, total: r7.total }) });
   }
+
+  // 8) Brand-new user (untouched defaultState(), no reload-time overrides): freeRemaining must
+  // be 0, not a false-alarm negative number. This was a real round-3 functional-regression
+  // finding - a fresh user with checkingBalance===0 saw "-130 000 Ft" in red purely because
+  // defaultState()'s seed discretionary categories had non-zero example limits (40000+30000+
+  // 25000+15000+20000=130000) despite the user never having entered a single real number.
+  // Fixed by seeding those limits at 0, matching the existing all-zero mandatory[] pattern.
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForTimeout(400);
+  const fresh = await page.evaluate(() => {
+    App.ui.financeTab = 'attekintes';
+    RENDERERS.finance();
+    const discLimitTotal = App.state.finance.discretionary.reduce((s, x) => s + (x.limit || 0), 0);
+    const row = Array.from(document.querySelectorAll('#view-finance .card .flex.between')).map(el => el.textContent.trim()).find(t => t.includes('Jelenlegi szabad pénz'));
+    return { discLimitTotal, row };
+  });
+  results.push({ name: 'fresh defaultState(): default discretionary limits are all 0 (no false-alarm negative freeRemaining)', pass: fresh.discLimitTotal === 0, detail: 'discLimitTotal=' + fresh.discLimitTotal });
+  results.push({ name: 'fresh defaultState(): "Jelenlegi szabad pénz" row shows 0 Ft, not a negative number', pass: !!fresh.row && fresh.row.includes('0 Ft') && !fresh.row.includes('-'), detail: JSON.stringify(fresh.row) });
 
   console.log('\n=== Három donut (Folyószámla / Megtakarítási számla / Teljes kép) tesztek ===');
   results.forEach(r => console.log((r.pass ? 'PASS' : 'FAIL') + ' - ' + r.name + '  [' + r.detail + ']'));

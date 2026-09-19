@@ -374,12 +374,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.30';
+const APP_VERSION = '2.2.33';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.30';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.33';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -513,12 +513,17 @@ function defaultState(){
         {id:'m6',name:'Telefon',icon:'📱',amount:0,type:'fix'},
         {id:'m7',name:'Garázs',icon:'🚗',amount:0,type:'fix'},
       ],
+      // limit:0 minden kategórián, ugyanúgy, mint a fenti mandatory[].amount-nál - egy vadonatúj
+      // felhasználó checkingBalance/mandTotal/discLimitTotal mindegyike 0-ról indul, így a
+      // Card 1 "Jelenlegi szabad pénz" is 0 Ft (nem hamis, riasztó negatív szám), amíg a
+      // felhasználó saját limitet nem állít be (ld. round-3 audit finding, ami egy vadonatúj
+      // felhasználónál "-130 000 Ft"-ot mutatott, pusztán a korábbi nem-0 minta-limitek miatt).
       discretionary:[
-        {id:'d1',name:'Bevásárlás',icon:'🛒',spent:0,limit:40000},
-        {id:'d2',name:'Szórakozás',icon:'🎮',spent:0,limit:30000},
-        {id:'d3',name:'Autó',icon:'🚙',spent:0,limit:25000},
-        {id:'d4',name:'Sport/Egészség',icon:'🏃',spent:0,limit:15000},
-        {id:'d5',name:'Étterem/Kávé',icon:'☕',spent:0,limit:20000},
+        {id:'d1',name:'Bevásárlás',icon:'🛒',spent:0,limit:0},
+        {id:'d2',name:'Szórakozás',icon:'🎮',spent:0,limit:0},
+        {id:'d3',name:'Autó',icon:'🚙',spent:0,limit:0},
+        {id:'d4',name:'Sport/Egészség',icon:'🏃',spent:0,limit:0},
+        {id:'d5',name:'Étterem/Kávé',icon:'☕',spent:0,limit:0},
       ],
       savings:[
         {id:'s1',name:'Megtakarítás',icon:'🏦',saved:0,target:50000},
@@ -628,6 +633,8 @@ function normalizeAppState(){
   for(const k of ['tasks','events','workouts','weightLog','healthLog','journeys','journal','aiChat']){
     if(!Array.isArray(App.state[k])) App.state[k] = d[k];
   }
+  if(!Array.isArray(App.state.finance.discretionary)) App.state.finance.discretionary = d.finance.discretionary;
+  if(!Array.isArray(App.state.finance.savings)) App.state.finance.savings = d.finance.savings;
   if(!Array.isArray(App.state.finance.foodOrders)) App.state.finance.foodOrders = d.finance.foodOrders;
   if(!Array.isArray(App.state.finance.spendLedger)) App.state.finance.spendLedger = d.finance.spendLedger;
   /* finance.accounts (SZÁMLÁK): meglévő felhasználóknál (akiknek elmentett
@@ -635,6 +642,17 @@ function normalizeAppState(){
      töltjük fel - a VALÓS egyenleget nem ismerjük, azt a felhasználó a
      manageAccountSheet()-en állítja be kézzel. */
   if(!Array.isArray(App.state.finance.accounts)) App.state.finance.accounts = d.finance.accounts;
+  /* Negatív/hibás egyenleg-védelem: a manageAccountSheet()/addAccountSheet()/
+     transferBetweenAccountsSheet() UI-jai mind tiltják a negatív egyenleget
+     (saveAccountEdits()/saveAccount()/saveTransfer() guard-jai), de ez a
+     védelem soha nem terjedt ki a betöltési/import/felhő-útvonalakra - egy
+     régi/kézzel szerkesztett JSON-backup importja, vagy egy sérült
+     localStorage-bejegyzés negatív egyenleggel simán átcsúszott ide, és a
+     Folyószámla donuton/összegzésen valós, riasztó negatív számként jelent
+     meg (ld. a felhasználó által jelentett hibát). A cloud-szinkron is ezen
+     a függvényen megy át (ld. applyCloudData()), így ez a pótlás mindkét
+     betöltési útvonalat lefedi. */
+  App.state.finance.accounts.forEach(acc=>{ acc.balance = Math.max(0, Number(acc.balance)||0); });
   /* finance.incomeSources: meglévő felhasználóknál, akiknek elmentett állapotában ez a mező
      még nem létezett (csak a régi flat finance.monthlyIncome), a MÁR BEÁLLÍTOTT bevétel-számot
      az első ("Fizetés") bevételi forrássá alakítjuk át, hogy ne vesszen el - ld. a feature-leírást.
@@ -1808,6 +1826,7 @@ function sanitizeImportedIdsAndIcons(state){
     state.finance && state.finance.savings,
     state.finance && state.finance.foodOrders,
     state.finance && state.finance.accounts,
+    state.finance && state.finance.incomeSources,
   ];
   idIconArrays.forEach(arr=>{
     if(!Array.isArray(arr)) return;
@@ -5645,10 +5664,11 @@ RENDERERS.finance = function(){
   const freeRemaining = checkingBalance - mandTotal - discLimitTotal; // a TELJES tervezett kerettel (nem csak az eddig elköltöttel) számolt, valóban szabad/le nem kötött pénz, a VALÓS folyószámla-egyenlegből (checkingBalance) - lásd Card 2/3, amik ugyanígy a finance.accounts valós egyenlegeiből számolnak
 
   /* DONUT_PALETTE/donutColor: az 5 törzsszín (ld. --trail-* CSS-változók) ciklikus
-     kiosztása egy-egy donut TETSZŐLEGES számú szegmenséhez (megtakarítási cél / számla),
-     nem csak a fix 4 szegmenses "Folyószámla" donuthoz - 6+ elem esetén a színek
-     körbefordulnak (i % 5). Card 2 (Megtakarítási számla) és Card 3 (Teljes kép)
-     is ugyanezt a helpert használja, hogy a ciklus-logika egy helyen éljen. */
+     kiosztása egy-egy donut TETSZŐLEGES számú szegmenséhez (pl. számla), nem csak a
+     fix 4 szegmenses "Folyószámla" donuthoz - 6+ elem esetén a színek körbefordulnak
+     (i % 5). Csak Card 3 (Teljes kép) használja közvetlenül - Card 2 (Megtakarítási
+     számla) a lentebbi GOAL_PALETTE/goalColor-t használja, ami ebből származik, de a
+     fehért kihagyja (ld. az ottani doksit, miért NEM ugyanaz a két helper). */
   const DONUT_PALETTE = ['#4A85AC','#D9A441','#5C8F62','#C1432B','#EDE9DD'];
   const donutColor = i => DONUT_PALETTE[i % DONUT_PALETTE.length];
   /* GOAL_PALETTE: a Card 2 (Megtakarítási számla) cél-szegmensei a fehért ('#EDE9DD')
@@ -5834,7 +5854,14 @@ RENDERERS.finance = function(){
 
       const canvasSavings = document.getElementById('chart-donut-savings');
       if(canvasSavings){
-        const savingsSegs = (f.savings||[]).map((g,i)=>({value:g.saved||0, color:goalColor(i)}));
+        /* Ha a célok saved-összege meghaladja a valós totalSavingsBalance-t (a fenti doksi
+           szerint ez a függetlenség miatt lehetséges), a gyűrűt arányosan lekicsinyítjük
+           totalSavingsBalance-ra - így a gyűrű szegmenseinek összege MINDIG megegyezik a
+           kirajzolt középső számmal (nincs "100%-ra tele gyűrű, kisebb középső szám"
+           ellentmondás). A kártya szöveges sorai továbbra is a valós g.saved értékeket
+           írják ki - csak a vizualizáció skálázódik. */
+        const goalScale = (totalGoalsSaved>totalSavingsBalance && totalGoalsSaved>0) ? totalSavingsBalance/totalGoalsSaved : 1;
+        const savingsSegs = (f.savings||[]).map((g,i)=>({value:(g.saved||0)*goalScale, color:goalColor(i)}));
         if(unallocated>0) savingsSegs.push({value:unallocated, color:'#EDE9DD'});
         drawDonutChart(canvasSavings, savingsSegs, 'MEGTAKARÍTÁS', totalSavingsBalance.toLocaleString('hu-HU')+' Ft');
       }
@@ -6410,12 +6437,18 @@ function saveAccount(){
 
 /* transferBetweenAccountsSheet(): két számla (chiprow-választó, ld. a fájlban
    máshol is használt "Honnan/Hova"-jellegű mintát, pl. mn-type/bn-cat) közötti
-   utalás. A "Mire teszed félre?" cél-választó chip-sáv (#tr-goal-section)
-   DINAMIKUSAN frissül a "Hova" választás módosulásakor (refreshTransferGoalSection())
-   - csak akkor jelenik meg, ha a JELENLEG kiválasztott célszámla type==='savings',
-   így a felhasznaló sosem lát értelmetlen célválasztót egy folyószámla-célnál.
-   A cél választása MINDIG opcionális (alapértelmezett: "Nincs konkrét cél / Egyéb"
-   chip aktív) - ld. a felhasználó saját megfogalmazását a jegyben. */
+   utalás. A "Mire teszed félre?" (Hova, #tr-goal-section) és a "Melyik célból
+   veszed ki?" (Honnan, #tr-from-goal-section) cél-választó chip-sávok
+   DINAMIKUSAN frissülnek a Honnan/Hova választás módosulásakor
+   (refreshTransferGoalSection()) - a Hova-oldali csak akkor jelenik meg, ha a
+   JELENLEG kiválasztott célszámla type==='savings', a Honnan-oldali csak akkor,
+   ha a forrásszámla type==='savings' ÉS van legalább egy nem-nulla saved cél -
+   így a felhasználó sosem lát értelmetlen célválasztót egy folyószámlánál.
+   Mindkét cél választása MINDIG opcionális (alapértelmezett: "Nincs konkrét
+   cél / Egyéb" chip aktív) - ld. a felhasználó saját megfogalmazását a jegyben.
+   A Honnan-oldali választás saveTransfer()-ben a kiválasztott cél saved
+   mezőjét csökkenti (0-ra clampelve), szimmetrikusan a Hova-oldali növeléssel -
+   ld. a round-3 code-quality audit Finding 3-át, ami ennek hiányát jelezte. */
 function transferBetweenAccountsSheet(){
   const accounts = App.state.finance.accounts||[];
   if(accounts.length<2){ toast('Legalább két számla kell az utaláshoz'); return; }
@@ -6424,12 +6457,14 @@ function transferBetweenAccountsSheet(){
   const chipsHtml = (selectedId)=>accounts.map(a=>`<div class="chip ${a.id===selectedId?'active':''}" data-id="${escapeHtml(a.id)}">${escapeHtml(a.icon||'💳')} ${escapeHtml(a.name)}</div>`).join('');
   openSheet(`<div class="sheet-head"><div class="sheet-title">Utalás számlák között</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     <div class="field"><label>Honnan</label><div class="chiprow" id="tr-from">${chipsHtml(defaultFrom.id)}</div></div>
+    <div id="tr-from-goal-section"></div>
     <div class="field"><label>Hova</label><div class="chiprow" id="tr-to">${chipsHtml(defaultTo.id)}</div></div>
     <div class="field"><label>Összeg (Ft)</label><input type="text" inputmode="numeric" id="tr-amount" style="font-size:20px;text-align:center;padding:16px;" placeholder="Ft"></div>
     <div id="tr-goal-section"></div>
     <button class="btn btn-primary btn-block" onclick="saveTransfer()">Utalás</button>`);
   document.querySelectorAll('#tr-from .chip').forEach(c=>c.addEventListener('click',()=>{
     document.querySelectorAll('#tr-from .chip').forEach(x=>x.classList.remove('active')); c.classList.add('active');
+    refreshTransferGoalSection();
   }));
   document.querySelectorAll('#tr-to .chip').forEach(c=>c.addEventListener('click',()=>{
     document.querySelectorAll('#tr-to .chip').forEach(x=>x.classList.remove('active')); c.classList.add('active');
@@ -6439,22 +6474,44 @@ function transferBetweenAccountsSheet(){
   refreshTransferGoalSection();
 }
 function refreshTransferGoalSection(){
-  const section = document.getElementById('tr-goal-section');
-  if(!section) return;
-  const toChip = document.querySelector('#tr-to .chip.active');
-  const toAccount = toChip ? App.state.finance.accounts.find(a=>a.id===toChip.dataset.id) : null;
   const goals = App.state.finance.savings||[];
-  if(!toAccount || toAccount.type!=='savings' || !goals.length){
-    section.innerHTML='';
-    return;
+  // Hova oldal: "Mire teszed félre?" - csak savings-típusú célszámlánál jelenik meg.
+  const toSection = document.getElementById('tr-goal-section');
+  if(toSection){
+    const toChip = document.querySelector('#tr-to .chip.active');
+    const toAccount = toChip ? App.state.finance.accounts.find(a=>a.id===toChip.dataset.id) : null;
+    if(!toAccount || toAccount.type!=='savings' || !goals.length){
+      toSection.innerHTML='';
+    } else {
+      toSection.innerHTML = `<div class="field"><label>Mire teszed félre?</label><div class="chiprow" id="tr-goal">
+        <div class="chip active" data-id="">Nincs konkrét cél / Egyéb</div>
+        ${goals.map(g=>`<div class="chip" data-id="${escapeHtml(g.id)}">${escapeHtml(g.icon||'🏦')} ${escapeHtml(g.name)}</div>`).join('')}
+      </div></div>`;
+      document.querySelectorAll('#tr-goal .chip').forEach(c=>c.addEventListener('click',()=>{
+        document.querySelectorAll('#tr-goal .chip').forEach(x=>x.classList.remove('active')); c.classList.add('active');
+      }));
+    }
   }
-  section.innerHTML = `<div class="field"><label>Mire teszed félre?</label><div class="chiprow" id="tr-goal">
-    <div class="chip active" data-id="">Nincs konkrét cél / Egyéb</div>
-    ${goals.map(g=>`<div class="chip" data-id="${escapeHtml(g.id)}">${escapeHtml(g.icon||'🏦')} ${escapeHtml(g.name)}</div>`).join('')}
-  </div></div>`;
-  document.querySelectorAll('#tr-goal .chip').forEach(c=>c.addEventListener('click',()=>{
-    document.querySelectorAll('#tr-goal .chip').forEach(x=>x.classList.remove('active')); c.classList.add('active');
-  }));
+  // Honnan oldal: "Melyik célból veszed ki?" - csak savings-típusú forrásszámlánál, és csak
+  // olyan céloknál, amiknek van legalább egy Ft-juk félretéve (0 saved-ű célt nem érdemes
+  // felkínálni levonásra).
+  const fromSection = document.getElementById('tr-from-goal-section');
+  if(fromSection){
+    const fromChip = document.querySelector('#tr-from .chip.active');
+    const fromAccount = fromChip ? App.state.finance.accounts.find(a=>a.id===fromChip.dataset.id) : null;
+    const withdrawableGoals = goals.filter(g=>(g.saved||0)>0);
+    if(!fromAccount || fromAccount.type!=='savings' || !withdrawableGoals.length){
+      fromSection.innerHTML='';
+    } else {
+      fromSection.innerHTML = `<div class="field"><label>Melyik célból veszed ki?</label><div class="chiprow" id="tr-from-goal">
+        <div class="chip active" data-id="">Nincs konkrét cél / Egyéb</div>
+        ${withdrawableGoals.map(g=>`<div class="chip" data-id="${escapeHtml(g.id)}">${escapeHtml(g.icon||'🏦')} ${escapeHtml(g.name)}</div>`).join('')}
+      </div></div>`;
+      document.querySelectorAll('#tr-from-goal .chip').forEach(c=>c.addEventListener('click',()=>{
+        document.querySelectorAll('#tr-from-goal .chip').forEach(x=>x.classList.remove('active')); c.classList.add('active');
+      }));
+    }
+  }
 }
 function saveTransfer(){
   const fromChip = document.querySelector('#tr-from .chip.active');
@@ -6483,8 +6540,23 @@ function saveTransfer(){
       }
     }
   }
+  // Szimmetrikus levonás: ha a FORRÁS is savings-típusú és a felhasználó megjelölt egy célt,
+  // amiből kiveszi az összeget, a cél saved mezője 0-ra clampelve csökken - ld. a
+  // transferBetweenAccountsSheet() feletti doksit / round-3 audit Finding 3.
+  let fromGoalName = null;
+  if(fromAcc.type==='savings'){
+    const fromGoalChip = document.querySelector('#tr-from-goal .chip.active');
+    const fromGoalId = fromGoalChip ? fromGoalChip.dataset.id : '';
+    if(fromGoalId){
+      const fromGoal = App.state.finance.savings.find(g=>g.id===fromGoalId);
+      if(fromGoal){
+        fromGoal.saved = Math.max(0, (fromGoal.saved||0) - amount);
+        fromGoalName = fromGoal.name;
+      }
+    }
+  }
   saveState(); closeSheet();
-  toast('Elutalva '+amount.toLocaleString('hu-HU')+' Ft: '+fromAcc.name+' → '+toAcc.name+(goalName?' (cél: '+goalName+')':''));
+  toast('Elutalva '+amount.toLocaleString('hu-HU')+' Ft: '+fromAcc.name+' → '+toAcc.name+(goalName?' (cél: '+goalName+')':'')+(fromGoalName?' (levonva: '+fromGoalName+')':''));
   RENDERERS.finance();
 }
 
@@ -6870,7 +6942,7 @@ function applyImportedJson(text){
   const parsed = JSON.parse(text);
   if(!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid root');
   const d = defaultState();
-  const next = Object.assign(d, parsed);
+  const next = Object.assign({}, d, parsed);
   /* Mélyebb ellenőrzés/pótlás a loadState() mintája alapján, kiterjesztve */
   if(!next.finance || typeof next.finance !== 'object' || !Array.isArray(next.finance.mandatory)){
     const oldIncome = (next.finance && next.finance.monthlyIncome) || 0;
@@ -6882,6 +6954,10 @@ function applyImportedJson(text){
   if(!Array.isArray(next.finance.foodOrders)) next.finance.foodOrders = d.finance.foodOrders;
   if(!Array.isArray(next.finance.spendLedger)) next.finance.spendLedger = d.finance.spendLedger;
   if(!Array.isArray(next.finance.accounts)) next.finance.accounts = d.finance.accounts;
+  /* Ugyanaz a negatív/hibás egyenleg-védelem, mint normalizeAppState()-ben -
+     ld. az ottani doksit. Ez a függvény NEM hívja normalizeAppState()-et
+     (saját, párhuzamos pótlás-logikája van), ezért itt is kell a pótlás. */
+  next.finance.accounts.forEach(acc=>{ acc.balance = Math.max(0, Number(acc.balance)||0); });
   if(!Array.isArray(next.finance.incomeSources)){
     const legacyIncome = next.finance.monthlyIncome||0;
     next.finance.incomeSources = legacyIncome>0 ? [{id:'inc1',name:'Fizetés',amount:legacyIncome}] : d.finance.incomeSources;
