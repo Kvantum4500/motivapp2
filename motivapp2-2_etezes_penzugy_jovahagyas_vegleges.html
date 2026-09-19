@@ -384,12 +384,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.38';
+const APP_VERSION = '2.2.39';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.38';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.39';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -1840,8 +1840,14 @@ function parseAmountInput(v){
    (also interpolated unescaped at several render sites): icons are meant to be
    a single short emoji/glyph, so stripping HTML-significant characters and
    capping the length costs nothing for real icons. */
+/* Csak a ténylegesen veszélyes karaktereket (attribútum-/tag-kitörésre
+   alkalmas idézőjel, szögletes zárójel, & és backslash) távolítja el -
+   NEM az összes nem-alfanumerikus karaktert, mert az a normál, biztonságos
+   kötőjeles/aláhúzásos id-ket (pl. az alapértelmezett 'acc-checking') is
+   szétverte volna minden App-indításkor, amióta normalizeAppState() is
+   meghívja ezt (ld. ott a doksit) - nem csak fájl-importkor. */
 function sanitizeImportedId(id){
-  const s = String(id==null?'':id).replace(/[^a-z0-9]/gi,'');
+  const s = String(id==null?'':id).replace(/[<>&"'\\]/g,'');
   return s || uid();
 }
 function sanitizeIcon(icon){
