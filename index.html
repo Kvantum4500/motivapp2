@@ -374,12 +374,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.33';
+const APP_VERSION = '2.2.34';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.33';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.34';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -535,7 +535,14 @@ function defaultState(){
       // a felhasználó közvetlenül állítja be/módosítja (manageAccountSheet()),
       // pont úgy, mint a discretionary.spent / savings.saved mezőket - NINCS
       // automatikus levonás/befizetés a monthlyIncome/mandatory/discretionary
-      // felől, ld. RENDERERS.finance SZÁMLÁK al-fül doksiját.
+      // felől, ld. RENDERERS.finance SZÁMLÁK al-fül doksiját. EGYETLEN, explicit
+      // opt-in kivétel: egy discretionary tétel megjelölhető "megtakarítás
+      // jellegűnek" (isSavingsType:true + savingsAccountId, ld.
+      // discretionarySavingsTypeChipsHtml()/applyDiscretionarySpendDelta()) - ekkor
+      // az odarögzített spent NEM a Folyószámla kártyát terheli, hanem a
+      // megjelölt savings-típusú accounts[] elem balance-át csökkenti. Alapértelmezett
+      // kategóriáknál (ld. lentebb) ez a mező nincs beállítva (isSavingsType hiányzik,
+      // ami falsy-ként ugyanúgy "szokásos kiadás"-t jelent).
       accounts:[
         {id:'acc-checking',name:'Folyószámla',icon:'💳',type:'checking',balance:0},
         {id:'acc-savings',name:'Megtakarítási számla',icon:'🏦',type:'savings',balance:0},
@@ -5201,6 +5208,31 @@ function checkSavingsGoalMilestone(goal){
    minta, mint a bossNotified/workoutStreakQuestSuggestedDates tömböknél, csak
    a cél/kategória objektumon tárolva, mert az esemény ahhoz az egy tételhez
    kötődik - ld. checkSavingsGoalMilestone goal._questSuggested100 mezőjét is). */
+/* applyDiscretionarySpendDelta: EGYETLEN helyen kezeli, hogy egy "Egyéb kategória"
+   (discretionary) spent mezőjének megváltozása hogyan hat ki a valós számlaegyenlegre -
+   ezt hívja minden hely, ahol eddig közvetlenül `x.spent = (x.spent||0) + v` történt
+   (saveSpend(), _applyDiscretionarySpendSuggestion(), saveBankNotification(),
+   saveFoodoraOrder()), és a közvetlen szerkesztés (saveDiscretionaryEdits()) is a
+   régi/új spent KÜLÖNBSÉGÉVEL hívja. `delta` lehet negatív is (pl. egy tévesen
+   rögzített költés visszajavítása).
+   Ha a kategória meg van jelölve "megtakarítás jellegűnek" (isSavingsType) és van
+   érvényes, LÉTEZŐ savings-típusú számlára mutató savingsAccountId-ja, a delta a
+   Folyószámla helyett ENNEK a számlának az egyenlegét csökkenti (soha nem megy
+   0 alá - ld. a UI-s "nem lehet negatív" guard-ok szellemében, ld.
+   saveAccountEdits()/saveTransfer()). Ha a kategória NEM megtakarítás jellegű
+   (a döntő többség), ez pontosan a régi, változatlan viselkedés: csak a
+   kategória spent mezője változik, semmilyen számlaegyenleg nem érintett - a
+   RENDERERS.finance() discSpent/discLimitTotal szűrése (ld. ott) gondoskodik
+   róla, hogy egy megtakarítás jellegű kategória ne számítson bele a Folyószámla
+   "hátralévő keret"/"Jelenlegi szabad pénz" számításába, hiszen az az összeg
+   ténylegesen a Megtakarítási számláról fogy, nem a Folyószámláról. */
+function applyDiscretionarySpendDelta(item, delta){
+  item.spent = Math.max(0, (item.spent||0) + delta);
+  if(item.isSavingsType && item.savingsAccountId){
+    const acc = (App.state.finance.accounts||[]).find(a=>a.id===item.savingsAccountId && a.type==='savings');
+    if(acc) acc.balance = Math.max(0, (acc.balance||0) - delta);
+  }
+}
 function checkDiscretionaryUnderBudget(cat){
   if(!App.state.rpg || !App.state.rpg.onboarded) return;
   if(!cat || !(cat.limit>0)) return;
@@ -5456,7 +5488,7 @@ function _applyDiscretionarySpendSuggestion(s){
     || (App.state.finance.discretionary||[]).find(x=>normFin(x.name).includes(target)||target.includes(normFin(x.name)));
   if(!item) return 'Nincs ilyen egyéb kiadás kategória — vedd fel előbb a Pénzügyek fülön ✗';
   const amount = Number(s.amount)||0;
-  item.spent = (item.spent||0) + amount;
+  applyDiscretionarySpendDelta(item, amount);
   const dupWarning = recordSpendAndCheckDup(item.id, amount, todayISO(), 'ai');
   return '🛍️ '+item.name+': +'+amount.toLocaleString('hu-HU')+' Ft költés rögzítve ✓' + (dupWarning ? ' ⚠️ '+dupWarning : '');
 }
@@ -5658,8 +5690,13 @@ RENDERERS.finance = function(){
   const totalIncome = (f.incomeSources||[]).reduce((s,x)=>s+(x.amount||0),0); // csak INFORMATÍV: a bevárt bevétel összege, ld. lentebb - NEM folyik bele a freeRemaining számításba
   const checkingBalance = (f.accounts||[]).filter(a=>a.type==='checking').reduce((s,a)=>s+(a.balance||0),0); // a valós, kézzel karbantartott folyószámla-egyenleg (finance.accounts) - EZ hajtja a Card 1 donutot/összegzést, nem a totalIncome
   const mandTotal = f.mandatory.reduce((s,x)=>s+(x.amount||0),0);
-  const discSpent = f.discretionary.reduce((s,x)=>s+(x.spent||0),0);
-  const discLimitTotal = f.discretionary.reduce((s,x)=>s+(x.limit||0),0);
+  /* Egy "megtakarítás jellegű"-re jelölt kategória (ld. discretionarySavingsTypeChipsHtml()/
+     applyDiscretionarySpendDelta()) NEM számít bele a Folyószámla kártya kiadás-összegeibe/
+     "hátralévő keret"-ébe - az odarögzített összeg ténylegesen a Megtakarítási számla
+     egyenlegéből fogy (a valós számlaegyenleg-mozgás már megtörtént), nem a Folyószámláéból,
+     így itt duplán levonni is hiba lenne. */
+  const discSpent = f.discretionary.filter(x=>!x.isSavingsType).reduce((s,x)=>s+(x.spent||0),0);
+  const discLimitTotal = f.discretionary.filter(x=>!x.isSavingsType).reduce((s,x)=>s+(x.limit||0),0);
   const discPlanned = Math.max(0, discLimitTotal - discSpent); // hátralévő, még el nem költött keret
   const freeRemaining = checkingBalance - mandTotal - discLimitTotal; // a TELJES tervezett kerettel (nem csak az eddig elköltöttel) számolt, valóban szabad/le nem kötött pénz, a VALÓS folyószámla-egyenlegből (checkingBalance) - lásd Card 2/3, amik ugyanígy a finance.accounts valós egyenlegeiből számolnak
 
@@ -5765,7 +5802,7 @@ RENDERERS.finance = function(){
     ${f.discretionary.map((x,idx)=>{
       const pct = x.limit? Math.min(100,Math.round(100*(x.spent||0)/x.limit)) : 0;
       return `<div class="card">
-        <div class="flex between center"><span class="flex gap8 center"><span style="font-size:16px;">${escapeHtml(x.icon||'🛒')}</span><span style="font-weight:700;font-size:14px;">${escapeHtml(x.name)}</span></span><span class="flex gap8 center"><span class="pill pill-muted">Választható</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" onclick="manageDiscretionarySheet('${x.id}')">⋯</span></span></div>
+        <div class="flex between center"><span class="flex gap8 center"><span style="font-size:16px;">${escapeHtml(x.icon||'🛒')}</span><span style="font-weight:700;font-size:14px;">${escapeHtml(x.name)}</span></span><span class="flex gap8 center"><span class="pill ${x.isSavingsType?'pill-blue':'pill-muted'}">${x.isSavingsType?'🏦 Megtakarítás':'Választható'}</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" onclick="manageDiscretionarySheet('${x.id}')">⋯</span></span></div>
         <div class="flex between" style="margin:10px 0 6px;"><span class="mono" style="font-size:15px;">${(x.spent||0).toLocaleString('hu-HU')} Ft</span><span class="small muted">/ ${(x.limit||0).toLocaleString('hu-HU')} Ft</span></div>
         <div class="progwrap"><div class="progbar" style="width:${pct}%;${pct>=100?'background:var(--trail-red);':''}"></div></div>
         <div class="flex between" style="margin-top:8px;">
@@ -5996,19 +6033,79 @@ function saveMandatoryAmount(id){
   x.amount=v;
   saveState(); closeSheet(); toast('Mentve'); RENDERERS.finance();
 }
+/* discretionarySavingsTypeChipsHtml/refreshDiscretionarySavingsSection: a "Típus"
+   választó (Szokásos kiadás / 🏦 Megtakarítás jellegű) és a hozzá tartozó,
+   DINAMIKUSAN megjelenő számla-választó megosztott jelölése az add-/edit-lapok
+   között (ld. addDiscretionarySheet()/manageDiscretionarySheet()) - ugyanaz a
+   "prefix"-alapú minta, mint a tr-from/tr-to chiprow-oké transferBetweenAccountsSheet()-nél.
+   Ha egy kategória megtakarítás jellegűre van állítva ÉS van érvényes
+   savingsAccountId-ja, az odarögzített összeg (ld. applyDiscretionarySpendDelta())
+   NEM a Folyószámlát, hanem a kiválasztott megtakarítási számla egyenlegét
+   csökkenti - és ki is marad a Folyószámla kártya "hátralévő keret"/"Jelenlegi
+   szabad pénz" számításából (ld. RENDERERS.finance() discSpent/discLimitTotal
+   szűrését). Ha nincs felvett megtakarítási típusú számla, a chip helyett egy
+   figyelmeztető szöveg jelenik meg, és a beállítás nem lép érvénybe (a mentéskor
+   isSavingsType csak akkor kerül true-ra, ha van kiválasztható számla is). */
+function discretionarySavingsTypeChipsHtml(prefix, isSavingsType){
+  return `<div class="field"><label>Típus</label><div class="chiprow" id="${prefix}-savingstype">
+    <div class="chip ${!isSavingsType?'active':''}" data-v="normal">Szokásos kiadás</div>
+    <div class="chip ${isSavingsType?'active':''}" data-v="savings">🏦 Megtakarítás jellegű</div>
+  </div></div>
+  <div id="${prefix}-savingsacct-section"></div>`;
+}
+function wireDiscretionarySavingsTypeChips(prefix, preselectAccountId){
+  document.querySelectorAll('#'+prefix+'-savingstype .chip').forEach(c=>c.addEventListener('click',()=>{
+    document.querySelectorAll('#'+prefix+'-savingstype .chip').forEach(x=>x.classList.remove('active')); c.classList.add('active');
+    refreshDiscretionarySavingsSection(prefix, preselectAccountId);
+  }));
+  refreshDiscretionarySavingsSection(prefix, preselectAccountId);
+}
+function refreshDiscretionarySavingsSection(prefix, preselectAccountId){
+  const section = document.getElementById(prefix+'-savingsacct-section');
+  if(!section) return;
+  const typeChip = document.querySelector('#'+prefix+'-savingstype .chip.active');
+  const isSavings = typeChip && typeChip.dataset.v==='savings';
+  if(!isSavings){ section.innerHTML=''; return; }
+  const savingsAccounts = (App.state.finance.accounts||[]).filter(a=>a.type==='savings');
+  if(!savingsAccounts.length){
+    section.innerHTML = `<div class="small muted" style="margin:-4px 0 12px;">Nincs megtakarítási számlád — vegyél fel egyet a SZÁMLÁK fülön, különben ez a beállítás nem lép érvénybe.</div>`;
+    return;
+  }
+  section.innerHTML = `<div class="field"><label>Melyik számláról vonódjon le?</label><div class="chiprow" id="${prefix}-savingsacct">
+    ${savingsAccounts.map((a,i)=>`<div class="chip ${(preselectAccountId? a.id===preselectAccountId : i===0)?'active':''}" data-id="${escapeHtml(a.id)}">${escapeHtml(a.icon||'🏦')} ${escapeHtml(a.name)}</div>`).join('')}
+  </div></div>`;
+  document.querySelectorAll('#'+prefix+'-savingsacct .chip').forEach(c=>c.addEventListener('click',()=>{
+    document.querySelectorAll('#'+prefix+'-savingsacct .chip').forEach(x=>x.classList.remove('active')); c.classList.add('active');
+  }));
+}
+/* readDiscretionarySavingsTypeFromSheet: a mentéskor (saveDiscretionary()/
+   saveDiscretionaryEdits()) ebből olvassuk ki, hogy a felhasználó "Megtakarítás
+   jellegű"-re állította-e a kategóriát, és ha igen, melyik számlát választotta -
+   ha nincs kiválasztható/kiválasztott számla, isSavingsType FALSE marad, még ha
+   a chip aktív is volt (ld. a fenti "nincs megtakarítási számlád" eset). */
+function readDiscretionarySavingsTypeFromSheet(prefix){
+  const typeChip = document.querySelector('#'+prefix+'-savingstype .chip.active');
+  const wantsSavings = !!(typeChip && typeChip.dataset.v==='savings');
+  const acctChip = document.querySelector('#'+prefix+'-savingsacct .chip.active');
+  const savingsAccountId = acctChip ? acctChip.dataset.id : null;
+  return { isSavingsType: wantsSavings && !!savingsAccountId, savingsAccountId: wantsSavings ? savingsAccountId : null };
+}
 function addDiscretionarySheet(){
   openSheet(`<div class="sheet-head"><div class="sheet-title">Új kategória</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     <div class="field"><label>Megnevezés</label><input type="text" id="dc-name" placeholder="Pl. Ruházat"></div>
     <div class="field"><label>Havi keret (Ft)</label><input type="text" inputmode="numeric" id="dc-limit"></div>
+    ${discretionarySavingsTypeChipsHtml('dc', false)}
     <button class="btn btn-primary btn-block" onclick="saveDiscretionary()">Mentés</button>`);
   formatAmountInputLive(document.getElementById('dc-limit'));
+  wireDiscretionarySavingsTypeChips('dc', null);
 }
 function saveDiscretionary(){
   const name=document.getElementById('dc-name').value.trim();
   if(!name){ toast('Adj meg egy nevet'); return; }
   const limit=parseAmountInput(document.getElementById('dc-limit').value);
   if(limit<0){ toast('Az érték nem lehet negatív'); return; }
-  App.state.finance.discretionary.push({id:uid(),name,icon:'🛍️',spent:0,limit});
+  const { isSavingsType, savingsAccountId } = readDiscretionarySavingsTypeFromSheet('dc');
+  App.state.finance.discretionary.push({id:uid(),name,icon:'🛍️',spent:0,limit,isSavingsType,savingsAccountId});
   saveState(); closeSheet(); toast('Hozzáadva'); RENDERERS.finance();
 }
 function logSpendSheet(id){
@@ -6037,7 +6134,7 @@ function saveSpend(id){
   const x=App.state.finance.discretionary.find(i=>i.id===id); if(!x) return;
   const v=parseAmountInput(document.getElementById('sp-amount').value);
   if(v<0){ toast('Az érték nem lehet negatív'); return; }
-  x.spent=(x.spent||0)+v;
+  applyDiscretionarySpendDelta(x, v);
   const dupWarning = recordSpendAndCheckDup(x.id, v, todayISO(), 'manual');
   checkDiscretionaryUnderBudget(x); // Ötlet #35 pénzügyi ág - ld. a definíciónál
   saveState(); closeSheet(); toast(dupWarning ? 'Rögzítve ⚠️ '+dupWarning : 'Rögzítve'); RENDERERS.finance();
@@ -6180,7 +6277,7 @@ function saveBankNotification(){
   if(!activeChip){ toast('Válassz kategóriát'); return; }
   const x = App.state.finance.discretionary.find(i=>i.id===activeChip.dataset.id);
   if(!x){ toast('Kategória nem található'); return; }
-  x.spent=(x.spent||0)+v;
+  applyDiscretionarySpendDelta(x, v);
   const dupWarning = recordSpendAndCheckDup(x.id, v, todayISO(), 'bank');
   checkDiscretionaryUnderBudget(x); // Ötlet #35 pénzügyi ág - ld. a definíciónál
   saveState(); _finishActiveNotifQueueItem(true); toast(dupWarning ? 'Elmentve ⚠️ '+dupWarning : 'Elmentve'); RENDERERS.finance();
@@ -6221,7 +6318,7 @@ function saveFoodoraOrder(){
   const x = App.state.finance.discretionary.find(i=>i.id===ctx.catId);
   if(!x){ toast('Nincs megfelelő kategória felvéve az étkezéshez'); return; }
   App.state.finance.foodOrders.unshift({id:uid(), amount:v, rawText:ctx.rawText||'', date:todayISO(), appliedToDiscretionaryId:x.id});
-  x.spent=(x.spent||0)+v;
+  applyDiscretionarySpendDelta(x, v);
   const dupWarning = recordSpendAndCheckDup(x.id, v, todayISO(), 'foodora');
   checkDiscretionaryUnderBudget(x); // Ötlet #35 pénzügyi ág - ld. a definíciónál
   saveState(); _finishActiveNotifQueueItem(true); toast(dupWarning ? 'Rögzítve ⚠️ '+dupWarning : 'Rögzítve'); RENDERERS.finance();
@@ -6236,6 +6333,7 @@ function manageDiscretionarySheet(id){
     <div class="field"><label>Ikon (emoji)</label><input type="text" id="dc-edit-icon" value="${escapeHtml(x.icon||'🛍️')}" maxlength="16" style="width:70px;font-size:20px;text-align:center;"></div>
     <div class="field"><label>Havi keret / cél összeg (Ft)</label><input type="text" inputmode="numeric" id="dc-edit-limit" value="${fmtFtInput(x.limit||0)}"></div>
     <div class="field"><label>Eddig elköltött összeg (Ft)</label><input type="text" inputmode="numeric" id="dc-edit-spent" value="${fmtFtInput(x.spent||0)}" style="font-size:20px;text-align:center;padding:16px;"></div>
+    ${discretionarySavingsTypeChipsHtml('dc-edit', !!x.isSavingsType)}
     <button class="btn btn-primary btn-block" onclick="saveDiscretionaryEdits('${id}')">Mentés</button>
     <div class="hr"></div>
     <div class="flex gap8" style="margin-top:10px;">
@@ -6245,6 +6343,7 @@ function manageDiscretionarySheet(id){
     <button class="btn btn-danger btn-sm btn-block" style="margin-top:8px;" onclick="removeFinanceItem('discretionary','${id}');closeSheet();">🗑️ Törlés</button>`);
   formatAmountInputLive(document.getElementById('dc-edit-limit'));
   formatAmountInputLive(document.getElementById('dc-edit-spent'));
+  wireDiscretionarySavingsTypeChips('dc-edit', x.savingsAccountId);
 }
 /* saveDiscretionaryEdits: az "Egyéb kategóriák" (discretionary) tétele eddig
    csak a nézet sorrendjében volt mozgatható/törölhető, az elköltött összeg
@@ -6264,10 +6363,14 @@ function saveDiscretionaryEdits(id){
   if(limit<0){ toast('A keret nem lehet negatív'); return; }
   const spent=parseAmountInput(document.getElementById('dc-edit-spent').value);
   if(spent<0){ toast('Az elköltött összeg nem lehet negatív'); return; }
+  const { isSavingsType, savingsAccountId } = readDiscretionarySavingsTypeFromSheet('dc-edit');
+  const delta = spent - (x.spent||0);
   x.name=name;
   x.icon=icon||'🛍️';
   x.limit=limit;
-  x.spent=spent;
+  x.isSavingsType=isSavingsType;
+  x.savingsAccountId=savingsAccountId;
+  applyDiscretionarySpendDelta(x, delta); // beállítja x.spent-et is (régi+delta=spent) és szükség esetén a számlaegyenleget
   checkDiscretionaryUnderBudget(x); // parity a saveSavingsEdits() checkSavingsGoalMilestone()-hívásával
   saveState(); closeSheet(); toast('Mentve'); RENDERERS.finance();
 }
