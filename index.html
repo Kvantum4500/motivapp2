@@ -317,6 +317,7 @@ a{color:inherit;}
       <div class="eyebrow" id="tb-eyebrow">MOTIVAPP 2.0</div>
       <div class="headline" id="tb-headline">Szia!</div>
       <div class="daytype" id="tb-daytype"></div>
+      <span id="tb-save-warn" class="dot dot-red" style="display:none;margin-left:6px;" title="Mentés jelenleg sikertelen — Beállítások → Adatok"></span>
     </div>
   </div>
 
@@ -374,12 +375,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.33';
+const APP_VERSION = '2.2.35';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.33';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.35';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -719,6 +720,7 @@ function saveState(){
     else{ _saveFailStreak++; }
     const badge = document.getElementById('save-status-badge');
     if(badge) badge.outerHTML = saveStatusBadgeHtml();
+    updateTopbarSaveWarn();
   }, 500);
 }
 
@@ -2024,6 +2026,16 @@ function renderTopbar(){
   const d = document.getElementById('tb-daytype');
   d.className = 'daytype pill-'+meta.color;
   d.innerHTML = '<span class="dot dot-'+meta.color+'"></span>'+meta.label;
+  updateTopbarSaveWarn();
+}
+// updateTopbarSaveWarn(): a mentés-hiba jelzőt (piros pötty a topbaron) minden
+// nézeten megjeleníti, nemcsak a Ma/Beállítások nézet saját save-status-badge
+// kártyáján - renderTopbar() minden nézetváltáskor (renderApp() elején) lefut,
+// és saveState() mentés-eredménye után is közvetlenül hívjuk, hogy váltás
+// nélkül is azonnal látszódjon.
+function updateTopbarSaveWarn(){
+  const w = document.getElementById('tb-save-warn');
+  if(w) w.style.display = _saveFailStreak>0 ? 'inline-block' : 'none';
 }
 const RENDERERS = {};
 /*__NAV__*/
@@ -3554,7 +3566,7 @@ async function generateCustomSport(){
 }
 
 function renderStatsView(c){
-  const wk = App.state.workouts.slice().sort((a,b)=>b.date.localeCompare(a.date));
+  const wk = App.state.workouts.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
   c.innerHTML = `
     <div class="flex between center"><div class="sectiontitle" style="margin:0;">Edzésnapló</div>
       <span class="small" style="color:var(--trail-yellow);cursor:pointer;" onclick="openAddWorkoutSheet()">+ Új edzés</span></div>
@@ -3636,7 +3648,7 @@ function drawWeightChart(canvas){
   const ctx = setupCanvas(canvas);
   const w=canvas._cssW,h=canvas._cssH;
   ctx.clearRect(0,0,w,h);
-  const log = App.state.weightLog.slice().sort((a,b)=>a.date.localeCompare(b.date)).slice(-14);
+  const log = App.state.weightLog.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')).slice(-14);
   if(log.length<2){ ctx.fillStyle='#6C8177'; ctx.font='12px Inter'; ctx.textAlign='center'; ctx.fillText('Legalább 2 mérés kell a trendhez', w/2, h/2); return; }
   const vals = log.map(l=>l.kg);
   const min=Math.min(...vals)-0.5, max=Math.max(...vals)+0.5;
@@ -3885,7 +3897,7 @@ function fmtElapsed(ms){ const s=Math.floor(ms/1000),h=Math.floor(s/3600),m=Math
 function trackDistanceKm(){ let d=0; const p=App.ui.trackPoints; for(let i=1;i<p.length;i++) d+=haversine(p[i-1],p[i]); return d/1000; }
 
 function renderJourneysView(c){
-  const journeys = App.state.journeys.slice().sort((a,b)=>b.date.localeCompare(a.date));
+  const journeys = App.state.journeys.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
   c.innerHTML = `<div class="card" style="padding:6px 16px;">
     ${journeys.length? journeys.map(j=>`
       <div class="row tap" style="cursor:pointer;" onclick="App.ui.terkepView='map';App.ui.selectedJourney='${j.id}';renderTerkepContentWithTabs();">
