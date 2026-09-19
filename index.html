@@ -375,12 +375,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.35';
+const APP_VERSION = '2.2.36';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.35';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.36';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -680,6 +680,14 @@ function normalizeAppState(){
   if(!Array.isArray(App.state.rpg.workoutStreakQuestSuggestedDates)) App.state.rpg.workoutStreakQuestSuggestedDates = [];
   if(typeof App.state.rpg.onboarded !== 'boolean') App.state.rpg.onboarded = false;
   if(!App.state.cycleCoach || typeof App.state.cycleCoach !== 'object') App.state.cycleCoach = d.cycleCoach;
+  /* Id/icon-tisztítás: eddig CSAK applyImportedJson() (fájl-import) hívta ezt,
+     de normalizeAppState() a loadState() (helyi betöltés) ÉS applyCloudData()
+     (felhő-szinkron) útvonalán is lefut - egy másik eszközről Firebase-en
+     keresztül érkező sérült/kompromittált id (pl. onclick="toggleTask('${t.id}')"
+     attribútumba escapelés nélkül kerülő id) korábban sosem ment át ezen a
+     szűrésen. sanitizeImportedIdsAndIcons() idempotens (uid()-szerű, már tiszta
+     id-ken/ikonokon no-op), így az importált-JSON-os hívással nem ütközik. */
+  sanitizeImportedIdsAndIcons(App.state);
 }
 async function loadState(){
   try{
@@ -2146,7 +2154,7 @@ RENDERERS.ma = function(){
     </div>
 
     <div class="sectiontitle">🤖 MotivAI</div>
-    <div class="card tap" onclick="setTab('ai')">
+    <div class="card tap" onclick="openSub('ai')">
       <div class="flex gap8 center" style="margin-bottom:6px;"><span style="font-size:18px;">🤖</span><span class="card-title">MotivAI</span></div>
       <div class="small" style="color:var(--muted);line-height:1.5;">
         ${lastAi ? escapeHtml(lastAi.content).slice(0,140)+(lastAi.content.length>140?'…':'') : 'Kérdezd meg, mit érdemes ma csinálnod a munkarended, edzéseid és céljaid alapján.'}
@@ -5046,15 +5054,15 @@ function renderAiChat(){
             <label class="small muted" style="display:block;margin-top:6px;">Zsír (g)<input id="ai-sugg-fat-${i}-${si}" type="number" value="${Number(s.fat)||0}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='task'? `<div class="small muted" style="margin-top:2px;">Helyben felismert feladat — jóváhagyás előtt módosítható</div>
             <label class="small muted" style="display:block;margin-top:6px;">Cím<input id="ai-sugg-title-${i}-${si}" type="text" value="${escapeHtml(s.title||'')}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Határidő<input id="ai-sugg-date-${i}-${si}" type="date" value="${s.due||''}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Meddig tart? (opcionális)<input id="ai-sugg-dueend-${i}-${si}" type="date" value="${s.dueEnd||''}" style="width:100%;margin-top:2px;"></label>` : ''}
+            <label class="small muted" style="display:block;margin-top:6px;">Határidő<input id="ai-sugg-date-${i}-${si}" type="date" value="${escapeHtml(s.due||'')}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Meddig tart? (opcionális)<input id="ai-sugg-dueend-${i}-${si}" type="date" value="${escapeHtml(s.dueEnd||'')}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='event'? `<div class="small muted" style="margin-top:2px;">Helyben felismert esemény — jóváhagyás előtt módosítható</div>
             <label class="small muted" style="display:block;margin-top:6px;">Cím<input id="ai-sugg-title-${i}-${si}" type="text" value="${escapeHtml(s.title||'')}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${s.date||''}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Meddig tart? (opcionális)<input id="ai-sugg-enddate-${i}-${si}" type="date" value="${s.endDate||''}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Időpont<input id="ai-sugg-time-${i}-${si}" type="time" value="${s.time||''}" style="width:100%;margin-top:2px;"></label>` : ''}
+            <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${escapeHtml(s.date||'')}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Meddig tart? (opcionális)<input id="ai-sugg-enddate-${i}-${si}" type="date" value="${escapeHtml(s.endDate||'')}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Időpont<input id="ai-sugg-time-${i}-${si}" type="time" value="${escapeHtml(s.time||'')}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='workout'? `<label class="small muted" style="display:block;margin-top:6px;">Típus<input id="ai-sugg-cat-${i}-${si}" type="text" value="${escapeHtml(s.category||'Edzés')}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${s.date||todayISO()}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${escapeHtml(s.date||todayISO())}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Időtartam (perc)<input id="ai-sugg-dur-${i}-${si}" type="number" value="${parseInt(s.durationMin)||0}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Érintett izomcsoportok</label>
             <div class="chiprow" id="ai-sugg-muscles-${i}-${si}">${MUSCLE_GROUPS.map(mg=>`<div class="chip ${(s.muscleGroups||[]).includes(mg.id)?'active':''}" data-v="${mg.id}">${mg.label}</div>`).join('')}</div>
@@ -5065,14 +5073,14 @@ function renderAiChat(){
             <label class="small muted" style="display:block;margin-top:6px;">Energia előtte (0-100)<input id="ai-sugg-eb-${i}-${si}" type="number" min="0" max="100" value="${parseInt(s.energyBefore)??60}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Energia utána (0-100)<input id="ai-sugg-ea-${i}-${si}" type="number" min="0" max="100" value="${parseInt(s.energyAfter)??50}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='weight'? `<label class="small muted" style="display:block;margin-top:6px;">Testsúly (kg)<input id="ai-sugg-kg-${i}-${si}" type="number" step="0.1" value="${Number(s.kg)||0}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${s.date||todayISO()}" style="width:100%;margin-top:2px;"></label>` : ''}
+            <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${escapeHtml(s.date||todayISO())}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='health_log'? `<div class="small muted" style="margin-top:2px;">Csak a kitöltött mezők mentődnek.</div>
-            <label class="small muted" style="display:block;margin-top:6px;">Alvás (óra)<input id="ai-sugg-sleep-${i}-${si}" type="number" step="0.1" value="${s.sleepH??''}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Lépés<input id="ai-sugg-steps-${i}-${si}" type="number" value="${s.steps??''}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Pulzus<input id="ai-sugg-pulse-${i}-${si}" type="number" value="${s.pulse??''}" style="width:100%;margin-top:2px;"></label>` : ''}
+            <label class="small muted" style="display:block;margin-top:6px;">Alvás (óra)<input id="ai-sugg-sleep-${i}-${si}" type="number" step="0.1" value="${Number(s.sleepH)||''}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Lépés<input id="ai-sugg-steps-${i}-${si}" type="number" value="${Number(s.steps)||''}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Pulzus<input id="ai-sugg-pulse-${i}-${si}" type="number" value="${Number(s.pulse)||''}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='discretionary_spend'? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="text" inputmode="numeric" value="${Number(s.amount)?fmtFtInput(Number(s.amount)):''}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='savings_add'? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="text" inputmode="numeric" value="${Number(s.amount)?fmtFtInput(Number(s.amount)):''}" style="width:100%;margin-top:2px;"></label>` : ''}
-          ${s.type==='journal'? `<label class="small muted" style="display:block;margin-top:6px;">Hangulat (1-5)<input id="ai-sugg-mood-${i}-${si}" type="number" min="1" max="5" value="${s.mood||''}" style="width:100%;margin-top:2px;"></label>
+          ${s.type==='journal'? `<label class="small muted" style="display:block;margin-top:6px;">Hangulat (1-5)<input id="ai-sugg-mood-${i}-${si}" type="number" min="1" max="5" value="${parseInt(s.mood)||''}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Szöveg<textarea id="ai-sugg-jtext-${i}-${si}" style="width:100%;margin-top:2px;">${escapeHtml(s.text||'')}</textarea></label>` : ''}
           ${s.type==='skill_unlock'? `<div class="small muted" style="margin-top:2px;">Csak akkor jelöld, ha valóban elérted — ez a saját fejlődésed jelzője, nem automatikus számítás.</div>` : ''}
           ${s.type==='rpg_quest_add'? `<label class="small muted" style="display:block;margin-top:6px;">Terület<select id="ai-sugg-track-${i}-${si}" style="width:100%;margin-top:2px;">${RPG_TRACKS.map(t=>`<option value="${t.id}" ${s.trackId===t.id?'selected':''}>${t.icon} ${escapeHtml(t.name)}</option>`).join('')}</select></label>
