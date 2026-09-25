@@ -29,8 +29,29 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # android-actions/setup-android@v3 internally runs `sdkmanager tools`
+      # as part of its own setup, installing the long-deprecated monolithic
+      # "tools" package. Google has since removed that package from the SDK
+      # repository manifest entirely, so the action now fails outright with
+      # "Failed to find package 'tools'" before this workflow's own steps
+      # ever run - unrelated to anything in this repo. Installing the
+      # command-line tools directly avoids that legacy package altogether;
+      # only platform-tools/platforms/build-tools (below) are actually
+      # needed to build this project.
+      - name: Set up Android SDK (cmdline-tools, no legacy 'tools' package)
+        run: |
+          set -euo pipefail
+          SDK_ROOT="$HOME/android-sdk"
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+          curl -sSLo cmdline-tools.zip "https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip"
+          unzip -q cmdline-tools.zip -d "$SDK_ROOT/cmdline-tools"
+          mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+          rm cmdline-tools.zip
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
 
       - name: Install required Android SDK packages
         run: |
