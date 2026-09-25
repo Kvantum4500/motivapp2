@@ -83,7 +83,7 @@ const APP_DIR = __dirname + '/..';
       && emptyDisc.captured.centerLabel==='SZABAD PÉNZ'
       && emptyDisc.captured.centerValue===freeRemaining.toLocaleString('hu-HU')+' Ft';
     results.push({name:'empty discretionary: donut gets 4 segments, 0-value planned segment tolerated, no crash', pass: ok, detail: JSON.stringify(emptyDisc.captured)});
-    const rowsOk = emptyDisc.rows.some(r=>r.includes('Egyéb kiadás – tervezett') && r.includes('0 Ft'))
+    const rowsOk = emptyDisc.rows.some(r=>r.includes('Egyéb – hátralévő keret') && r.includes('0 Ft'))
       && emptyDisc.rows.some(r=>r.includes('Jelenlegi szabad pénz') && r.includes(freeRemaining.toLocaleString('hu-HU')+' Ft'));
     results.push({name:'empty discretionary: text rows show 0 planned and correct free money', pass: rowsOk, detail: JSON.stringify(emptyDisc.rows)});
   }

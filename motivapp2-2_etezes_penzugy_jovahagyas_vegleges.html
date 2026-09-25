@@ -19,7 +19,10 @@
   --line-strong:rgba(237,233,221,0.18);
   --paper:#EDE9DD;
   --muted:#93A79A;
-  --muted-2:#6C8177;
+  --muted-2:#8FA397; /* audit-round4: #6C8177 ~3.78:1 volt a sötét felületeken (WCAG AA < 4.5:1
+     kis szövegnél) - a nav-felirat (.navbtn .lb) és a naptár "+N esemény" (.evmore) erre épül.
+     Az új érték minden ténylegesen használt háttéren (surface #1C2521, surface-2 #242F29,
+     a #bottomnav kompozit háttere, ink #12181A) >=5:1 kontrasztot ad. */
   --trail-red:#C1432B;
   --trail-red-bg:rgba(193,67,43,0.16);
   --trail-blue:#4A85AC;
@@ -170,7 +173,13 @@ a{color:inherit;}
 /* ===== LIST ROWS ===== */
 .row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line);}
 .row:last-child{border-bottom:none;}
-.row-check{width:22px;height:22px;border-radius:7px;border:1.5px solid var(--line-strong);flex-shrink:0;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px;}
+.row-check{width:22px;height:22px;border-radius:7px;border:1.5px solid var(--line-strong);flex-shrink:0;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px;position:relative;}
+/* audit-round4: a látható doboz marad 22x22px, de a WCAG 2.5.8 (24x24px minimum érintési
+   cél) miatt egy láthatatlan ::after réteg 40x40px-re bővíti a tényleges kattintható/érinthető
+   területet - a pszeudoelemen történő kattintás/érintés a szülő .row-check-re buborékol fel,
+   így a meglévő onclick kezelők változtatás nélkül működnek tovább. */
+.row-check::after{content:'';position:absolute;inset:-9px;}
+.row-check:focus-visible{outline:2px solid var(--trail-yellow);outline-offset:2px;}
 .row-check.done{background:var(--trail-green);border-color:var(--trail-green);color:var(--ink);}
 .row-main{flex:1;min-width:0;}
 .row-title{font-weight:600;font-size:14.5px;}
@@ -317,6 +326,7 @@ a{color:inherit;}
       <div class="eyebrow" id="tb-eyebrow">MOTIVAPP 2.0</div>
       <div class="headline" id="tb-headline">Szia!</div>
       <div class="daytype" id="tb-daytype"></div>
+      <span id="tb-save-warn" class="dot dot-red" style="display:none;margin-left:6px;" title="Mentés jelenleg sikertelen — Beállítások → Adatok"></span>
     </div>
   </div>
 
@@ -374,12 +384,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.35';
+const APP_VERSION = '2.2.40';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.35';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.40';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -551,6 +561,13 @@ function defaultState(){
       ],
       foodOrders:[], // {id,amount,rawText,date,appliedToDiscretionaryId} - banki/Foodora értesítésből rögzített ételrendelések
       spendLedger:[], // {id,categoryId,amount,date,source} - könnyű napló csak dedup-ellenőrzéshez, ld. recordSpendAndCheckDup()
+      history:[], // ÚJ MEZŐ - meglévő felhasználóknál pótolandó (ld. normalizeAppState()/applyImportedJson()).
+      // Havi pillanatképek: {month:'YYYY-MM', mandatory:[...], discretionary:[...], totalIncome, savedAt} - a
+      // hónapváltáskor ÉPP LEZÁRT hónap mandatory/discretionary állapotát őrzi meg, mielőtt a discretionary[].spent
+      // nullázódna az új hónapra. Legfeljebb 24 elemet tartunk (2 év), ld. checkFinanceMonthRollover().
+      currentMonth: (new Date()).toISOString().slice(0,7), // ÚJ MEZŐ - meglévő felhasználóknál pótolandó. Az
+      // aktuálisan "élő" hónap ('YYYY-MM'), amihez a mandatory/discretionary adatok tartoznak - ld.
+      // checkFinanceMonthRollover(), ami ezt veti össze a naptári hónappal minden Pénzügyek-fül megnyitáskor.
     },
     journeys:[],
     journal:[], // {id,date,mood(1-5),text} - hangulatnapló bejegyzések
@@ -646,6 +663,14 @@ function normalizeAppState(){
   if(!Array.isArray(App.state.finance.savings)) App.state.finance.savings = d.finance.savings;
   if(!Array.isArray(App.state.finance.foodOrders)) App.state.finance.foodOrders = d.finance.foodOrders;
   if(!Array.isArray(App.state.finance.spendLedger)) App.state.finance.spendLedger = d.finance.spendLedger;
+  /* finance.history/currentMonth: meglévő felhasználóknál, akiknek elmentett állapotában ez a két
+     mező még nem létezett, NEM próbálunk visszamenőleg történetet generálni (nincs megbízható adat
+     a korábbi hónapokról) - a history üresen indul, a currentMonth pedig a MAI hónapra áll, hogy a
+     jövőbeli hónapváltásokat innentől helyesen kövesse checkFinanceMonthRollover(). */
+  if(!Array.isArray(App.state.finance.history)) App.state.finance.history = d.finance.history;
+  if(typeof App.state.finance.currentMonth !== 'string' || !/^\d{4}-\d{2}$/.test(App.state.finance.currentMonth)){
+    App.state.finance.currentMonth = (new Date()).toISOString().slice(0,7);
+  }
   /* finance.accounts (SZÁMLÁK): meglévő felhasználóknál (akiknek elmentett
      állapotában ez a mező még nem létezett) 0 egyenlegű alap-számlapárral
      töltjük fel - a VALÓS egyenleget nem ismerjük, azt a felhasználó a
@@ -688,6 +713,14 @@ function normalizeAppState(){
   if(!Array.isArray(App.state.rpg.workoutStreakQuestSuggestedDates)) App.state.rpg.workoutStreakQuestSuggestedDates = [];
   if(typeof App.state.rpg.onboarded !== 'boolean') App.state.rpg.onboarded = false;
   if(!App.state.cycleCoach || typeof App.state.cycleCoach !== 'object') App.state.cycleCoach = d.cycleCoach;
+  /* Id/icon-tisztítás: eddig CSAK applyImportedJson() (fájl-import) hívta ezt,
+     de normalizeAppState() a loadState() (helyi betöltés) ÉS applyCloudData()
+     (felhő-szinkron) útvonalán is lefut - egy másik eszközről Firebase-en
+     keresztül érkező sérült/kompromittált id (pl. onclick="toggleTask('${t.id}')"
+     attribútumba escapelés nélkül kerülő id) korábban sosem ment át ezen a
+     szűrésen. sanitizeImportedIdsAndIcons() idempotens (uid()-szerű, már tiszta
+     id-ken/ikonokon no-op), így az importált-JSON-os hívással nem ütközik. */
+  sanitizeImportedIdsAndIcons(App.state);
 }
 async function loadState(){
   try{
@@ -728,6 +761,7 @@ function saveState(){
     else{ _saveFailStreak++; }
     const badge = document.getElementById('save-status-badge');
     if(badge) badge.outerHTML = saveStatusBadgeHtml();
+    updateTopbarSaveWarn();
   }, 500);
 }
 
@@ -1815,8 +1849,14 @@ function parseAmountInput(v){
    (also interpolated unescaped at several render sites): icons are meant to be
    a single short emoji/glyph, so stripping HTML-significant characters and
    capping the length costs nothing for real icons. */
+/* Csak a ténylegesen veszélyes karaktereket (attribútum-/tag-kitörésre
+   alkalmas idézőjel, szögletes zárójel, & és backslash) távolítja el -
+   NEM az összes nem-alfanumerikus karaktert, mert az a normál, biztonságos
+   kötőjeles/aláhúzásos id-ket (pl. az alapértelmezett 'acc-checking') is
+   szétverte volna minden App-indításkor, amióta normalizeAppState() is
+   meghívja ezt (ld. ott a doksit) - nem csak fájl-importkor. */
 function sanitizeImportedId(id){
-  const s = String(id==null?'':id).replace(/[^a-z0-9]/gi,'');
+  const s = String(id==null?'':id).replace(/[<>&"'\\]/g,'');
   return s || uid();
 }
 function sanitizeIcon(icon){
@@ -2033,6 +2073,16 @@ function renderTopbar(){
   const d = document.getElementById('tb-daytype');
   d.className = 'daytype pill-'+meta.color;
   d.innerHTML = '<span class="dot dot-'+meta.color+'"></span>'+meta.label;
+  updateTopbarSaveWarn();
+}
+// updateTopbarSaveWarn(): a mentés-hiba jelzőt (piros pötty a topbaron) minden
+// nézeten megjeleníti, nemcsak a Ma/Beállítások nézet saját save-status-badge
+// kártyáján - renderTopbar() minden nézetváltáskor (renderApp() elején) lefut,
+// és saveState() mentés-eredménye után is közvetlenül hívjuk, hogy váltás
+// nélkül is azonnal látszódjon.
+function updateTopbarSaveWarn(){
+  const w = document.getElementById('tb-save-warn');
+  if(w) w.style.display = _saveFailStreak>0 ? 'inline-block' : 'none';
 }
 const RENDERERS = {};
 /*__NAV__*/
@@ -2082,7 +2132,7 @@ RENDERERS.ma = function(){
         </div>`).join('') : ''}
     </div>
 
-    <div class="sectiontitle">Feladatok <span class="g" style="cursor:pointer;font-size:13px;" onclick="openAddTaskSheet()">+ Új</span></div>
+    <div class="sectiontitle">Feladatok <span class="g" style="cursor:pointer;font-size:13px;" role="button" tabindex="0" onclick="openAddTaskSheet()" onkeydown="kbActivate(event,()=>openAddTaskSheet())">+ Új</span></div>
     <div class="card" style="padding:6px 16px;">
       ${tasksToday.length? tasksToday.map(t=>taskRowHtml(t)).join('') : `<div class="empty"><div class="ic">📋</div><div class="t">Nincs mai feladat</div><div class="d">Adj hozzá egyet a fenti gombbal.</div></div>`}
     </div>
@@ -2132,7 +2182,7 @@ RENDERERS.ma = function(){
     </div>
 
     <div class="sectiontitle">⚡ Energia</div>
-    <div class="card tap" onclick="setTab('fejlodes');App.ui.fejlView='energia';RENDERERS.fejlodes();">
+    <div class="card tap" role="button" tabindex="0" onclick="setTab('fejlodes');App.ui.fejlView='energia';RENDERERS.fejlodes();" onkeydown="kbActivate(event,()=>{setTab('fejlodes');App.ui.fejlView='energia';RENDERERS.fejlodes();})">
       <div class="flex between center">
         <div>
           <div class="mono" style="font-size:26px;font-weight:800;color:${energyNow===null?'var(--muted)':energyNow>=60?'var(--trail-green)':energyNow>=35?'var(--trail-yellow)':'var(--trail-red)'};">${energyNow===null?'—':energyNow+'%'}</div>
@@ -2143,7 +2193,7 @@ RENDERERS.ma = function(){
     </div>
 
     <div class="sectiontitle">🤖 MotivAI</div>
-    <div class="card tap" onclick="setTab('ai')">
+    <div class="card tap" role="button" tabindex="0" onclick="openSub('ai')" onkeydown="kbActivate(event,()=>openSub('ai'))">
       <div class="flex gap8 center" style="margin-bottom:6px;"><span style="font-size:18px;">🤖</span><span class="card-title">MotivAI</span></div>
       <div class="small" style="color:var(--muted);line-height:1.5;">
         ${lastAi ? escapeHtml(lastAi.content).slice(0,140)+(lastAi.content.length>140?'…':'') : 'Kérdezd meg, mit érdemes ma csinálnod a munkarended, edzéseid és céljaid alapján.'}
@@ -2194,7 +2244,7 @@ function taskRowHtml(t, afterToggle){
         <div class="progwrap" style="margin:7px 0 4px;"><div class="progbar" style="width:${t.progress||0}%"></div></div>
         <div class="small muted">${t.progress||0}% kész</div>
       </div>
-      <span class="g" style="cursor:pointer;padding-top:2px;" onclick="editTaskProgress('${t.id}')">✏️</span>
+      <span class="g" style="cursor:pointer;padding-top:2px;" role="button" tabindex="0" onclick="editTaskProgress('${t.id}')" onkeydown="kbActivate(event,()=>editTaskProgress('${t.id}'))">✏️</span>
     </div>`;
   }
   if(t.type==='steps'){
@@ -2211,9 +2261,12 @@ function taskRowHtml(t, afterToggle){
       <span class="g" style="padding-top:2px;">📋</span>
     </div>`;
   }
+  // audit-round4: lejárt határidejű (tegnapi vagy korábbi due, még nem done) feladat
+  // vizuális megkülönböztetése - piros "Lejárt" pill a címnél.
+  const overdue = !t.done && t.due && t.due < todayISO();
   return `<div class="row">
-    <div class="row-check ${t.done?'done':''}" onclick="toggleTask('${t.id}');${afterToggle||''}">${t.done?'✓':''}</div>
-    <div class="row-main"><div class="row-title ${t.done?'done':''}">${escapeHtml(t.title)}</div>
+    <div class="row-check ${t.done?'done':''}" role="checkbox" tabindex="0" aria-checked="${!!t.done}" onclick="toggleTask('${t.id}');${afterToggle||''}" onkeydown="kbActivate(event,()=>{toggleTask('${t.id}');${afterToggle||''}})">${t.done?'✓':''}</div>
+    <div class="row-main"><div class="row-title ${t.done?'done':''}">${escapeHtml(t.title)}${overdue?' <span class="pill pill-red" style="vertical-align:middle;">Lejárt</span>':''}</div>
     ${t.priority? `<div class="row-sub">${t.priority==='high'?'🔴 magas prioritás':t.priority==='low'?'⚪ alacsony prioritás':'🟡 közepes prioritás'}</div>`:''}
     </div>
   </div>`;
@@ -2304,7 +2357,7 @@ function renderStepsEditSheet(){
   openSheet(`
     <div class="sheet-head"><div class="sheet-title">Lépések${t?': '+escapeHtml(t.title):''}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
     <div class="card" style="padding:4px 16px;margin-bottom:12px;">
-      ${d.steps.length? d.steps.map((s,i)=>`<div class="row"><div class="row-main"><div class="row-title" style="font-size:14px;">${i+1}. ${escapeHtml(s.text)}</div></div><span class="g" style="cursor:pointer;" onclick="removeStepDraft(${i})">✕</span></div>`).join('') : `<div class="small muted" style="padding:12px 0;">Még nincs lépés hozzáadva.</div>`}
+      ${d.steps.length? d.steps.map((s,i)=>`<div class="row"><div class="row-main"><div class="row-title" style="font-size:14px;">${i+1}. ${escapeHtml(s.text)}</div></div><span class="g" style="cursor:pointer;" role="button" tabindex="0" onclick="removeStepDraft(${i})" onkeydown="kbActivate(event,()=>removeStepDraft(${i}))">✕</span></div>`).join('') : `<div class="small muted" style="padding:12px 0;">Még nincs lépés hozzáadva.</div>`}
     </div>
     <div class="field"><label>Új lépés</label><input type="text" id="sd-text" placeholder="Pl. hagymát megdinsztelni" onkeydown="if(event.key==='Enter'){event.preventDefault();addStepDraft();}"></div>
     <button class="btn btn-secondary btn-block" style="margin-bottom:10px;" onclick="addStepDraft()">+ Lépés hozzáadása</button>
@@ -2335,7 +2388,7 @@ function saveEditedSteps(){
 function openStepsChecklistSheet(id){
   const t = App.state.tasks.find(x=>x.id===id); if(!t) return;
   openSheet(`
-    <div class="sheet-head"><div class="sheet-title">${escapeHtml(t.title)}</div><div class="flex gap8"><span class="g" style="cursor:pointer;" onclick="openEditStepsSheet('${id}')">✏️</span><button class="iconbtn" onclick="closeSheet()">✕</button></div></div>
+    <div class="sheet-head"><div class="sheet-title">${escapeHtml(t.title)}</div><div class="flex gap8"><span class="g" style="cursor:pointer;" role="button" tabindex="0" onclick="openEditStepsSheet('${id}')" onkeydown="kbActivate(event,()=>openEditStepsSheet('${id}'))">✏️</span><button class="iconbtn" onclick="closeSheet()">✕</button></div></div>
     <div id="steps-checklist-list"></div>
   `);
   renderStepsChecklistList(id);
@@ -2346,7 +2399,7 @@ function renderStepsChecklistList(id){
   const steps = t.steps||[];
   c.innerHTML = steps.length? steps.map(s=>`
     <div class="row">
-      <div class="row-check ${s.done?'done':''}" onclick="toggleStepDone('${id}','${s.id}')">${s.done?'✓':''}</div>
+      <div class="row-check ${s.done?'done':''}" role="checkbox" tabindex="0" aria-checked="${!!s.done}" onclick="toggleStepDone('${id}','${s.id}')" onkeydown="kbActivate(event,()=>toggleStepDone('${id}','${s.id}'))">${s.done?'✓':''}</div>
       <div class="row-main"><div class="row-title ${s.done?'done':''}">${escapeHtml(s.text)}</div></div>
     </div>`).join('') : `<div class="empty"><div class="ic">📋</div><div class="t">Még nincs lépés</div><div class="d">Add hozzá a fejlécben lévő ✏️ gombbal.</div></div>`;
 }
@@ -2371,7 +2424,7 @@ function _feladatokListHtml(){
 }
 function feladatokSubBodyHtml(){
   return `
-    <div class="sectiontitle">Feladatkezelő <span class="g small" style="cursor:pointer;" onclick="openAddTaskSheet()">+ Új feladat</span></div>
+    <div class="sectiontitle">Feladatkezelő <span class="g small" style="cursor:pointer;" role="button" tabindex="0" onclick="openAddTaskSheet()" onkeydown="kbActivate(event,()=>openAddTaskSheet())">+ Új feladat</span></div>
     <div id="feladatok-sub-content">${_feladatokListHtml()}</div>
   `;
 }
@@ -2446,19 +2499,24 @@ RENDERERS.schedule = function(){
 
     <div class="sectiontitle">Összes feladat</div>
     <div class="card" style="padding:6px 16px;">
-      ${App.state.tasks.length? App.state.tasks.slice().sort((a,b)=>(a.due||'').localeCompare(b.due||'')).map(t=> t.type==='percent'? `
+      ${App.state.tasks.length? App.state.tasks.slice().sort((a,b)=>(a.due||'').localeCompare(b.due||'')).map(t=> {
+        // audit-round4: lejárt határidejű (tegnapi vagy korábbi due, még nem done) feladat
+        // vizuális megkülönböztetése - piros "Lejárt" pill a címnél.
+        const overdue = !t.done && t.due && t.due < todayISO();
+        return t.type==='percent'? `
         <div class="row" style="align-items:flex-start;">
           <div class="row-main">
-            <div class="flex between"><div class="row-title" style="font-size:14px;">${escapeHtml(t.title)}</div><span class="g" style="cursor:pointer;" onclick="editTaskProgress('${t.id}')">✏️</span></div>
+            <div class="flex between"><div class="row-title" style="font-size:14px;">${escapeHtml(t.title)}${overdue?' <span class="pill pill-red" style="vertical-align:middle;">Lejárt</span>':''}</div><span class="g" style="cursor:pointer;" role="button" tabindex="0" onclick="editTaskProgress('${t.id}')" onkeydown="kbActivate(event,()=>editTaskProgress('${t.id}'))">✏️</span></div>
             <div class="row-sub">${t.due?fmtDateHu(t.due):'nincs határidő'}</div>
             <div class="progwrap" style="margin:6px 0 3px;"><div class="progbar" style="width:${t.progress||0}%"></div></div>
             <div class="small muted">${t.progress||0}% kész</div>
           </div>
         </div>` : `
         <div class="row">
-          <div class="row-check ${t.done?'done':''}" onclick="toggleTask('${t.id}');renderCalContent();">${t.done?'✓':''}</div>
-          <div class="row-main"><div class="row-title ${t.done?'done':''}">${escapeHtml(t.title)}</div><div class="row-sub">${t.due?fmtDateHu(t.due):'nincs határidő'}</div></div>
-        </div>`).join('') : `<div class="empty"><div class="ic">📋</div><div class="t">Nincs feladat</div></div>`}
+          <div class="row-check ${t.done?'done':''}" role="checkbox" tabindex="0" aria-checked="${!!t.done}" onclick="toggleTask('${t.id}');renderCalContent();" onkeydown="kbActivate(event,()=>{toggleTask('${t.id}');renderCalContent();})">${t.done?'✓':''}</div>
+          <div class="row-main"><div class="row-title ${t.done?'done':''}">${escapeHtml(t.title)}${overdue?' <span class="pill pill-red" style="vertical-align:middle;">Lejárt</span>':''}</div><div class="row-sub">${t.due?fmtDateHu(t.due):'nincs határidő'}</div></div>
+        </div>`;
+      }).join('') : `<div class="empty"><div class="ic">📋</div><div class="t">Nincs feladat</div></div>`}
     </div>
   `;
   renderCalContent();
@@ -2524,11 +2582,11 @@ function renderNapView(c){
       </div>
       <button class="iconbtn" onclick="shiftCalRef(1)">›</button>
     </div>
-    <div class="sectiontitle">Feladatok <span class="g small" style="cursor:pointer;" onclick="openAddTaskSheet('${iso}')">+ Új</span></div>
+    <div class="sectiontitle">Feladatok <span class="g small" style="cursor:pointer;" role="button" tabindex="0" onclick="openAddTaskSheet('${iso}')" onkeydown="kbActivate(event,()=>openAddTaskSheet('${iso}'))">+ Új</span></div>
     <div class="card" style="padding:6px 16px;">
       ${tasksDay.length? tasksDay.map(t=>taskRowHtml(t,'renderCalContent();')).join('') : `<div class="small muted" style="padding:12px 0;">Nincs aznapi feladat.</div>`}
     </div>
-    <div class="sectiontitle">Események <span class="g small" style="cursor:pointer;" onclick="openAddEventSheet('${iso}')">+ Új</span></div>
+    <div class="sectiontitle">Események <span class="g small" style="cursor:pointer;" role="button" tabindex="0" onclick="openAddEventSheet('${iso}')" onkeydown="kbActivate(event,()=>openAddEventSheet('${iso}'))">+ Új</span></div>
     <div class="card" style="padding:6px 16px;">
       ${eventsDay.length? eventsDay.map(e=>`<div class="row"><span class="dot dot-${EVENT_COLORS[e.type]||'blue'}"></span><div class="row-main"><div class="row-title" style="font-size:14px;">${escapeHtml(e.title)}</div></div><span class="mono small muted">${e.time||''}</span></div>`).join('') : `<div class="small muted" style="padding:12px 0;">Nincs aznapi esemény.</div>`}
     </div>
@@ -2631,21 +2689,21 @@ function openDaySheet(iso){
           <div class="progwrap" style="margin:6px 0 3px;"><div class="progbar" style="width:${t.progress||0}%"></div></div>
           <div class="small muted">${t.progress||0}% kész</div>
         </div>
-        <span class="g" style="cursor:pointer;" onclick="editTaskProgress('${t.id}')">✏️</span>
-        <span class="g" style="cursor:pointer;margin-left:8px;" onclick="deleteTask('${t.id}','${iso}')">🗑️</span>
+        <span class="g" style="cursor:pointer;" role="button" tabindex="0" onclick="editTaskProgress('${t.id}')" onkeydown="kbActivate(event,()=>editTaskProgress('${t.id}'))">✏️</span>
+        <span class="g" style="cursor:pointer;margin-left:8px;" role="button" tabindex="0" onclick="deleteTask('${t.id}','${iso}')" onkeydown="kbActivate(event,()=>deleteTask('${t.id}','${iso}'))">🗑️</span>
       </div>` : `
       <div class="row">
-        <div class="row-check ${t.done?'done':''}" onclick="toggleTask('${t.id}');openDaySheet('${iso}');">${t.done?'✓':''}</div>
+        <div class="row-check ${t.done?'done':''}" role="checkbox" tabindex="0" aria-checked="${!!t.done}" onclick="toggleTask('${t.id}');openDaySheet('${iso}');" onkeydown="kbActivate(event,()=>{toggleTask('${t.id}');openDaySheet('${iso}');})">${t.done?'✓':''}</div>
         <div class="row-main"><div class="row-title ${t.done?'done':''}" style="font-size:13.5px;">${escapeHtml(t.title)}</div></div>
-        <span class="g" style="cursor:pointer;" onclick="deleteTask('${t.id}','${iso}')">🗑️</span>
+        <span class="g" style="cursor:pointer;" role="button" tabindex="0" onclick="deleteTask('${t.id}','${iso}')" onkeydown="kbActivate(event,()=>deleteTask('${t.id}','${iso}'))">🗑️</span>
       </div>`).join('') : `<div class="small muted" style="padding:10px 0;">Nincs feladat.</div>`}
     <div class="hr"></div>
     <div class="flex between center"><label style="font-size:12.5px;color:var(--muted);font-weight:600;">Események</label>
-      <span class="small" style="color:var(--trail-yellow);cursor:pointer;" onclick="openAddEventSheet('${iso}')">+ Új</span></div>
+      <span class="small" style="color:var(--trail-yellow);cursor:pointer;" role="button" tabindex="0" onclick="openAddEventSheet('${iso}')" onkeydown="kbActivate(event,()=>openAddEventSheet('${iso}'))">+ Új</span></div>
     ${evs.length? evs.map(e=>`
       <div class="row"><span class="dot dot-${EVENT_COLORS[e.type]}"></span>
         <div class="row-main"><div class="row-title" style="font-size:13.5px;">${escapeHtml(e.title)}</div><div class="row-sub">${e.time||''}</div></div>
-        <span class="g" style="cursor:pointer;" onclick="deleteEvent('${e.id}')">🗑️</span>
+        <span class="g" style="cursor:pointer;" role="button" tabindex="0" onclick="deleteEvent('${e.id}')" onkeydown="kbActivate(event,()=>deleteEvent('${e.id}'))">🗑️</span>
       </div>`).join('') : `<div class="small muted" style="padding:10px 0;">Nincs esemény.</div>`}
   `);
 }
@@ -3563,7 +3621,7 @@ async function generateCustomSport(){
 }
 
 function renderStatsView(c){
-  const wk = App.state.workouts.slice().sort((a,b)=>b.date.localeCompare(a.date));
+  const wk = App.state.workouts.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
   c.innerHTML = `
     <div class="flex between center"><div class="sectiontitle" style="margin:0;">Edzésnapló</div>
       <span class="small" style="color:var(--trail-yellow);cursor:pointer;" onclick="openAddWorkoutSheet()">+ Új edzés</span></div>
@@ -3645,7 +3703,7 @@ function drawWeightChart(canvas){
   const ctx = setupCanvas(canvas);
   const w=canvas._cssW,h=canvas._cssH;
   ctx.clearRect(0,0,w,h);
-  const log = App.state.weightLog.slice().sort((a,b)=>a.date.localeCompare(b.date)).slice(-14);
+  const log = App.state.weightLog.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')).slice(-14);
   if(log.length<2){ ctx.fillStyle='#6C8177'; ctx.font='12px Inter'; ctx.textAlign='center'; ctx.fillText('Legalább 2 mérés kell a trendhez', w/2, h/2); return; }
   const vals = log.map(l=>l.kg);
   const min=Math.min(...vals)-0.5, max=Math.max(...vals)+0.5;
@@ -3894,7 +3952,7 @@ function fmtElapsed(ms){ const s=Math.floor(ms/1000),h=Math.floor(s/3600),m=Math
 function trackDistanceKm(){ let d=0; const p=App.ui.trackPoints; for(let i=1;i<p.length;i++) d+=haversine(p[i-1],p[i]); return d/1000; }
 
 function renderJourneysView(c){
-  const journeys = App.state.journeys.slice().sort((a,b)=>b.date.localeCompare(a.date));
+  const journeys = App.state.journeys.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
   c.innerHTML = `<div class="card" style="padding:6px 16px;">
     ${journeys.length? journeys.map(j=>`
       <div class="row tap" style="cursor:pointer;" onclick="App.ui.terkepView='map';App.ui.selectedJourney='${j.id}';renderTerkepContentWithTabs();">
@@ -3904,7 +3962,7 @@ function renderJourneysView(c){
         <button class="iconbtn" data-stats-journey-id="${escapeHtml(j.id)}" title="Részletek">📊</button>
         ${(j.points&&j.points.length>1) ? `<button class="iconbtn" data-edit-journey-id="${escapeHtml(j.id)}" title="Útvonal javítása">✏️</button>` : ''}
         ${androidMapsAvailable() ? `<button class="iconbtn" data-native-map-id="${escapeHtml(j.id)}" title="Natív térkép">🗺️</button>` : ''}
-        <span class="g" onclick="event.stopPropagation();deleteJourney('${j.id}')">🗑️</span>
+        <span class="g" role="button" tabindex="0" onclick="event.stopPropagation();deleteJourney('${j.id}')" onkeydown="kbActivate(event,()=>{event.stopPropagation();deleteJourney('${j.id}')})">🗑️</span>
       </div>`).join('') : `<div class="empty"><div class="ic">🥾</div><div class="t">Még nincs mentett túra</div><div class="d">Indíts egy követést a TRACK fülön.</div></div>`}
   </div>`;
   /* Ezek a gombok NEM a globális [data-click] delegálást használják: a sor saját
@@ -5043,15 +5101,15 @@ function renderAiChat(){
             <label class="small muted" style="display:block;margin-top:6px;">Zsír (g)<input id="ai-sugg-fat-${i}-${si}" type="number" value="${Number(s.fat)||0}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='task'? `<div class="small muted" style="margin-top:2px;">Helyben felismert feladat — jóváhagyás előtt módosítható</div>
             <label class="small muted" style="display:block;margin-top:6px;">Cím<input id="ai-sugg-title-${i}-${si}" type="text" value="${escapeHtml(s.title||'')}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Határidő<input id="ai-sugg-date-${i}-${si}" type="date" value="${s.due||''}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Meddig tart? (opcionális)<input id="ai-sugg-dueend-${i}-${si}" type="date" value="${s.dueEnd||''}" style="width:100%;margin-top:2px;"></label>` : ''}
+            <label class="small muted" style="display:block;margin-top:6px;">Határidő<input id="ai-sugg-date-${i}-${si}" type="date" value="${escapeHtml(s.due||'')}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Meddig tart? (opcionális)<input id="ai-sugg-dueend-${i}-${si}" type="date" value="${escapeHtml(s.dueEnd||'')}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='event'? `<div class="small muted" style="margin-top:2px;">Helyben felismert esemény — jóváhagyás előtt módosítható</div>
             <label class="small muted" style="display:block;margin-top:6px;">Cím<input id="ai-sugg-title-${i}-${si}" type="text" value="${escapeHtml(s.title||'')}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${s.date||''}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Meddig tart? (opcionális)<input id="ai-sugg-enddate-${i}-${si}" type="date" value="${s.endDate||''}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Időpont<input id="ai-sugg-time-${i}-${si}" type="time" value="${s.time||''}" style="width:100%;margin-top:2px;"></label>` : ''}
+            <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${escapeHtml(s.date||'')}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Meddig tart? (opcionális)<input id="ai-sugg-enddate-${i}-${si}" type="date" value="${escapeHtml(s.endDate||'')}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Időpont<input id="ai-sugg-time-${i}-${si}" type="time" value="${escapeHtml(s.time||'')}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='workout'? `<label class="small muted" style="display:block;margin-top:6px;">Típus<input id="ai-sugg-cat-${i}-${si}" type="text" value="${escapeHtml(s.category||'Edzés')}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${s.date||todayISO()}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${escapeHtml(s.date||todayISO())}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Időtartam (perc)<input id="ai-sugg-dur-${i}-${si}" type="number" value="${parseInt(s.durationMin)||0}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Érintett izomcsoportok</label>
             <div class="chiprow" id="ai-sugg-muscles-${i}-${si}">${MUSCLE_GROUPS.map(mg=>`<div class="chip ${(s.muscleGroups||[]).includes(mg.id)?'active':''}" data-v="${mg.id}">${mg.label}</div>`).join('')}</div>
@@ -5062,14 +5120,14 @@ function renderAiChat(){
             <label class="small muted" style="display:block;margin-top:6px;">Energia előtte (0-100)<input id="ai-sugg-eb-${i}-${si}" type="number" min="0" max="100" value="${parseInt(s.energyBefore)??60}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Energia utána (0-100)<input id="ai-sugg-ea-${i}-${si}" type="number" min="0" max="100" value="${parseInt(s.energyAfter)??50}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='weight'? `<label class="small muted" style="display:block;margin-top:6px;">Testsúly (kg)<input id="ai-sugg-kg-${i}-${si}" type="number" step="0.1" value="${Number(s.kg)||0}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${s.date||todayISO()}" style="width:100%;margin-top:2px;"></label>` : ''}
+            <label class="small muted" style="display:block;margin-top:6px;">Dátum<input id="ai-sugg-date-${i}-${si}" type="date" value="${escapeHtml(s.date||todayISO())}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='health_log'? `<div class="small muted" style="margin-top:2px;">Csak a kitöltött mezők mentődnek.</div>
-            <label class="small muted" style="display:block;margin-top:6px;">Alvás (óra)<input id="ai-sugg-sleep-${i}-${si}" type="number" step="0.1" value="${s.sleepH??''}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Lépés<input id="ai-sugg-steps-${i}-${si}" type="number" value="${s.steps??''}" style="width:100%;margin-top:2px;"></label>
-            <label class="small muted" style="display:block;margin-top:6px;">Pulzus<input id="ai-sugg-pulse-${i}-${si}" type="number" value="${s.pulse??''}" style="width:100%;margin-top:2px;"></label>` : ''}
+            <label class="small muted" style="display:block;margin-top:6px;">Alvás (óra)<input id="ai-sugg-sleep-${i}-${si}" type="number" step="0.1" value="${Number(s.sleepH)||''}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Lépés<input id="ai-sugg-steps-${i}-${si}" type="number" value="${Number(s.steps)||''}" style="width:100%;margin-top:2px;"></label>
+            <label class="small muted" style="display:block;margin-top:6px;">Pulzus<input id="ai-sugg-pulse-${i}-${si}" type="number" value="${Number(s.pulse)||''}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='discretionary_spend'? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="text" inputmode="numeric" value="${Number(s.amount)?fmtFtInput(Number(s.amount)):''}" style="width:100%;margin-top:2px;"></label>` : ''}
           ${s.type==='savings_add'? `<label class="small muted" style="display:block;margin-top:6px;">Összeg (Ft)<input id="ai-sugg-amount-${i}-${si}" type="text" inputmode="numeric" value="${Number(s.amount)?fmtFtInput(Number(s.amount)):''}" style="width:100%;margin-top:2px;"></label>` : ''}
-          ${s.type==='journal'? `<label class="small muted" style="display:block;margin-top:6px;">Hangulat (1-5)<input id="ai-sugg-mood-${i}-${si}" type="number" min="1" max="5" value="${s.mood||''}" style="width:100%;margin-top:2px;"></label>
+          ${s.type==='journal'? `<label class="small muted" style="display:block;margin-top:6px;">Hangulat (1-5)<input id="ai-sugg-mood-${i}-${si}" type="number" min="1" max="5" value="${parseInt(s.mood)||''}" style="width:100%;margin-top:2px;"></label>
             <label class="small muted" style="display:block;margin-top:6px;">Szöveg<textarea id="ai-sugg-jtext-${i}-${si}" style="width:100%;margin-top:2px;">${escapeHtml(s.text||'')}</textarea></label>` : ''}
           ${s.type==='skill_unlock'? `<div class="small muted" style="margin-top:2px;">Csak akkor jelöld, ha valóban elérted — ez a saját fejlődésed jelzője, nem automatikus számítás.</div>` : ''}
           ${s.type==='rpg_quest_add'? `<label class="small muted" style="display:block;margin-top:6px;">Terület<select id="ai-sugg-track-${i}-${si}" style="width:100%;margin-top:2px;">${RPG_TRACKS.map(t=>`<option value="${t.id}" ${s.trackId===t.id?'selected':''}>${t.icon} ${escapeHtml(t.name)}</option>`).join('')}</select></label>
@@ -5662,7 +5720,69 @@ function financeTopToggleHtml(){
     </div>`;
 }
 function setFinanceTab(v){ App.ui.financeTab=v; RENDERERS.finance(); }
+/* checkFinanceMonthRollover(): a Pénzügyek fül minden megnyitásakor lefut (a
+   RENDERERS.finance() legelején hívva). Ha a naptári hónap eltér a
+   finance.currentMonth-tól (pl. az app egy hónapváltás óta most nyílik meg
+   először), pillanatképet ment az ELŐZŐ (épp lezárt) hónap mandatory/
+   discretionary állapotáról a finance.history[]-ba, majd nullázza a
+   discretionary[].spent mezőket az új hónapra (a limit-ek megmaradnak,
+   azok felhasználói beállítások, nem havi adatok). Ha több hónapot
+   "ugrott át" a felhasználó (pl. 3 hónapig nem nyitotta meg az appot), csak
+   EGY pillanatkép készül (az utolsó ismert currentMonth állapotáról) - nincs
+   értelme kitalált köztes hónapokat gyártani, hiszen azok alatt az adat
+   ténylegesen nem változott követhető módon. A history legfeljebb 24 elemet
+   őriz (2 év) - a réginél töröljük a legrégebbit, ugyanazzal a "korlátozott
+   tömbnövekedés" elvvel, mint pl. finance.spendLedger-nél (recordSpendAndCheckDup()). */
+function checkFinanceMonthRollover(){
+  const nowMonth = (new Date()).toISOString().slice(0,7);
+  const f = App.state.finance;
+  if(f.currentMonth === nowMonth) return;
+  /* Ha a currentMonth hiányzik vagy hibás formátumú (pl. egy state-objektum, ami sosem ment
+     át normalizeAppState()/applyImportedJson() migrációján), NE archiváljunk/nullázzunk
+     valós adatot puszta találgatásból - csak beállítjuk a mai hónapra, ugyanazzal a
+     "biztonságosan a mai hónapra áll, visszamenőleges történet nélkül" elvvel, mint a két
+     migrációs ág. */
+  if(typeof f.currentMonth !== 'string' || !/^\d{4}-\d{2}$/.test(f.currentMonth)){
+    f.currentMonth = nowMonth;
+    return;
+  }
+  f.history = Array.isArray(f.history) ? f.history : [];
+  f.history.unshift({
+    month: f.currentMonth,
+    mandatory: JSON.parse(JSON.stringify(f.mandatory||[])),
+    discretionary: JSON.parse(JSON.stringify(f.discretionary||[])),
+    totalIncome: (f.incomeSources||[]).reduce((s,x)=>s+(x.amount||0),0),
+    savedAt: new Date().toISOString(),
+  });
+  if(f.history.length>24) f.history = f.history.slice(0,24);
+  f.discretionary.forEach(x=>{ x.spent = 0; });
+  f.currentMonth = nowMonth;
+  saveState();
+}
+/* formatHistoryMonthLabel(): 'YYYY-MM' -> olvasható magyar címke, pl. '2025-08' -> '2025. augusztus'.
+   Saját, kisbetűs hónapnév-tömböt használ (a fájlban máshol létező monthNames tömbök nagybetűsek és
+   naptár-fejlécekhez valók, ld. pl. renderCalendarMonth() - ez a "ÉÉÉÉ. hónap" formátumhoz kisbetűs). */
+const HU_MONTHS_LOWER = ['január','február','március','április','május','június','július','augusztus','szeptember','október','november','december'];
+function formatHistoryMonthLabel(monthStr){
+  const m = /^(\d{4})-(\d{2})$/.exec(monthStr||'');
+  if(!m) return monthStr||'';
+  const mi = parseInt(m[2],10)-1;
+  return `${m[1]}. ${HU_MONTHS_LOWER[mi]||m[2]}`;
+}
+/* viewFinanceHistorySheet(): egy archivált hónap (finance.history[] eleme) részletező, csak-olvasható
+   nézete - a "Korábbi hónapok" listasorra kattintva nyílik (ld. attekintesHtml). */
+function viewFinanceHistorySheet(month){
+  const h = (App.state.finance.history||[]).find(x=>x.month===month); if(!h) return;
+  openSheet(`<div class="sheet-head"><div class="sheet-title">${escapeHtml(formatHistoryMonthLabel(month))}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+    <div class="sectiontitle">🔒 Kötelező kiadások</div>
+    ${(h.mandatory||[]).map(x=>`<div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small">${escapeHtml(x.icon||'💳')} ${escapeHtml(x.name)}</span><span class="mono small">${(x.amount||0).toLocaleString('hu-HU')} Ft</span></div>`).join('')}
+    <div class="sectiontitle" style="margin-top:14px;">🛍️ Egyéb kiadások</div>
+    ${(h.discretionary||[]).map(x=>`<div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small">${escapeHtml(x.icon||'🛒')} ${escapeHtml(x.name)}</span><span class="mono small">${(x.spent||0).toLocaleString('hu-HU')} / ${(x.limit||0).toLocaleString('hu-HU')} Ft</span></div>`).join('')}
+    <div class="hr"></div>
+    <div class="flex between" style="padding:5px 0;font-weight:700;"><span>Várt bevétel</span><span class="mono">${(h.totalIncome||0).toLocaleString('hu-HU')} Ft</span></div>`);
+}
 RENDERERS.finance = function(){
+  checkFinanceMonthRollover();
   const f = App.state.finance;
   const totalIncome = (f.incomeSources||[]).reduce((s,x)=>s+(x.amount||0),0); // csak INFORMATÍV: a bevárt bevétel összege, ld. lentebb - NEM folyik bele a freeRemaining számításba
   const checkingBalance = (f.accounts||[]).filter(a=>a.type==='checking').reduce((s,a)=>s+(a.balance||0),0); // a valós, kézzel karbantartott folyószámla-egyenleg (finance.accounts) - EZ hajtja a Card 1 donutot/összegzést, nem a totalIncome
@@ -5713,7 +5833,7 @@ RENDERERS.finance = function(){
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span style="font-size:13px;">💳</span>Folyószámla egyenleg</span><span class="mono small">${checkingBalance.toLocaleString('hu-HU')} Ft</span></div>
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-blue"></span>Kötelező kiadás</span><span class="mono small">${mandTotal.toLocaleString('hu-HU')} Ft</span></div>
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-yellow"></span>Egyéb kiadás – elköltött</span><span class="mono small">${discSpent.toLocaleString('hu-HU')} Ft</span></div>
-      <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small"><span class="dot dot-white"></span>Egyéb kiadás – tervezett (hátralévő keret)</span><span class="mono small">${discPlanned.toLocaleString('hu-HU')} Ft</span></div>
+      <div class="flex between" style="padding:5px 0;flex-wrap:wrap;gap:4px;"><span class="flex gap8 center small"><span class="dot dot-white"></span>Egyéb – hátralévő keret</span><span class="mono small" style="white-space:nowrap;">${discPlanned.toLocaleString('hu-HU')} Ft</span></div>
       <div class="flex between" style="padding:5px 0;"><span class="flex gap8 center small" style="font-weight:700;"><span class="dot dot-green"></span>Jelenlegi szabad pénz</span><span class="mono small" style="font-weight:700;color:${freeRemaining>=0?'var(--trail-green)':'var(--trail-red)'};">${freeRemaining.toLocaleString('hu-HU')} Ft</span></div>
     </div>
 
@@ -5721,7 +5841,7 @@ RENDERERS.finance = function(){
     ${(f.incomeSources||[]).map(x=>`<div class="card">
       <div class="flex between center">
         <span class="flex gap8 center"><span style="font-size:16px;">💰</span><span class="row-title" style="font-weight:700;font-size:14px;">${escapeHtml(x.name)}</span></span>
-        <span class="flex gap8 center"><span class="mono" style="font-size:15px;">${(x.amount||0).toLocaleString('hu-HU')} Ft</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" onclick="manageIncomeSourceSheet('${x.id}')">⋯</span></span>
+        <span class="flex gap8 center"><span class="mono" style="font-size:15px;">${(x.amount||0).toLocaleString('hu-HU')} Ft</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" role="button" tabindex="0" onclick="manageIncomeSourceSheet('${x.id}')" onkeydown="kbActivate(event,()=>manageIncomeSourceSheet('${x.id}'))">⋯</span></span>
       </div>
       <div class="flex between" style="margin-top:8px;">
         <span></span>
@@ -5763,6 +5883,12 @@ RENDERERS.finance = function(){
 
     <div class="sectiontitle">Kiadások megoszlása</div>
     <div class="card">${renderExpenseDistribution(f)}</div>
+
+    <div class="sectiontitle">📅 Korábbi hónapok</div>
+    <div class="card" style="padding:2px 16px;">
+      ${(!f.history || !f.history.length) ? `<div class="small muted" style="padding:8px 0;">Még nincs korábbi hónap-adat — az első hónapváltáskor jelenik meg itt.</div>` :
+        f.history.map(h=>`<div class="menurow" role="button" tabindex="0" onclick="viewFinanceHistorySheet('${h.month}')" onkeydown="kbActivate(event,()=>viewFinanceHistorySheet('${h.month}'))"><span class="ic">📅</span><span class="lb">${escapeHtml(formatHistoryMonthLabel(h.month))}</span><span class="arrow">›</span></div>`).join('')}
+    </div>
   `;
 
   const kiadasokHtml = `
@@ -5778,13 +5904,18 @@ RENDERERS.finance = function(){
 
     <div class="sectiontitle">Egyéb kategóriák <span class="small" style="color:var(--trail-yellow);cursor:pointer;" onclick="addDiscretionarySheet()">+ Új kategória</span></div>
     ${f.discretionary.map((x,idx)=>{
+      // pct: a progress bar SZÉLESSÉGÉHEZ 100-ra vágva (a sáv fizikailag nem mehet 100% fölé).
+      // realPct: a VALÓS, nem levágott felhasználási arány - a SZÖVEG/ikon ebből dolgozik,
+      // hogy 100%+ túlköltésnél ne tűnjön sikeresnek egy "✓ 100%" felirat (audit-round4).
       const pct = x.limit? Math.min(100,Math.round(100*(x.spent||0)/x.limit)) : 0;
+      const realPct = x.limit? Math.round(100*(x.spent||0)/x.limit) : 0;
+      const over = realPct>100;
       return `<div class="card">
-        <div class="flex between center"><span class="flex gap8 center"><span style="font-size:16px;">${escapeHtml(x.icon||'🛒')}</span><span style="font-weight:700;font-size:14px;">${escapeHtml(x.name)}</span></span><span class="flex gap8 center"><span class="pill pill-muted">Választható</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" onclick="manageDiscretionarySheet('${x.id}')">⋯</span></span></div>
+        <div class="flex between center"><span class="flex gap8 center"><span style="font-size:16px;">${escapeHtml(x.icon||'🛒')}</span><span style="font-weight:700;font-size:14px;">${escapeHtml(x.name)}</span></span><span class="flex gap8 center"><span class="pill pill-muted">Választható</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" role="button" tabindex="0" onclick="manageDiscretionarySheet('${x.id}')" onkeydown="kbActivate(event,()=>manageDiscretionarySheet('${x.id}'))">⋯</span></span></div>
         <div class="flex between" style="margin:10px 0 6px;"><span class="mono" style="font-size:15px;">${(x.spent||0).toLocaleString('hu-HU')} Ft</span><span class="small muted">/ ${(x.limit||0).toLocaleString('hu-HU')} Ft</span></div>
         <div class="progwrap"><div class="progbar" style="width:${pct}%;${pct>=100?'background:var(--trail-red);':''}"></div></div>
         <div class="flex between" style="margin-top:8px;">
-          <span class="small" style="color:${pct>=100?'var(--trail-red)':'var(--trail-blue)'};">✓ ${pct}% felhasználva</span>
+          <span class="small" style="color:${over?'var(--trail-red)':'var(--trail-blue)'};font-weight:${over?'700':'400'};">${over?`⚠ ${realPct}% — túllépted a keretet`:`✓ ${pct}% felhasználva`}</span>
           <span class="small" style="display:flex;gap:12px;">
             <a style="color:var(--trail-yellow);cursor:pointer;" onclick="logSpendSheet('${x.id}')">+ Költés</a>
           </span>
@@ -5809,7 +5940,7 @@ RENDERERS.finance = function(){
       const pct = x.target? Math.min(100,Math.round(100*(x.saved||0)/x.target)) : 0;
       const statusColor = pct>=75?'var(--trail-green)':pct>=25?'var(--trail-yellow)':'var(--trail-red)';
       return `<div class="card">
-        <div class="flex between center"><span class="flex gap8 center"><span style="font-size:16px;">${escapeHtml(x.icon||'🏦')}</span><span style="font-weight:700;font-size:14px;">${escapeHtml(x.name)}</span></span><span class="flex gap8 center"><span class="pill pill-green">Megtakarítás</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" onclick="manageSavingsSheet('${x.id}')">⋯</span></span></div>
+        <div class="flex between center"><span class="flex gap8 center"><span style="font-size:16px;">${escapeHtml(x.icon||'🏦')}</span><span style="font-weight:700;font-size:14px;">${escapeHtml(x.name)}</span></span><span class="flex gap8 center"><span class="pill pill-green">Megtakarítás</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" role="button" tabindex="0" onclick="manageSavingsSheet('${x.id}')" onkeydown="kbActivate(event,()=>manageSavingsSheet('${x.id}'))">⋯</span></span></div>
         <div class="flex between" style="margin:10px 0 6px;"><span class="mono" style="font-size:15px;">${(x.saved||0).toLocaleString('hu-HU')} Ft</span><span class="small muted">/ ${(x.target||0).toLocaleString('hu-HU')} Ft</span></div>
         <div class="progwrap"><div class="progbar" style="width:${pct}%;background:${statusColor};"></div></div>
         <div class="flex between" style="margin-top:8px;">
@@ -5838,7 +5969,7 @@ RENDERERS.finance = function(){
     ${accountsList.map(x=>`<div class="card">
       <div class="flex between center">
         <span class="flex gap8 center"><span style="font-size:16px;">${escapeHtml(x.icon||'💳')}</span><span style="font-weight:700;font-size:14px;">${escapeHtml(x.name)}</span></span>
-        <span class="flex gap8 center"><span class="pill ${x.type==='savings'?'pill-green':'pill-blue'}">${x.type==='savings'?'Megtakarítási':'Folyószámla'}</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" onclick="manageAccountSheet('${x.id}')">⋯</span></span>
+        <span class="flex gap8 center"><span class="pill ${x.type==='savings'?'pill-green':'pill-blue'}">${x.type==='savings'?'Megtakarítási':'Folyószámla'}</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" role="button" tabindex="0" onclick="manageAccountSheet('${x.id}')" onkeydown="kbActivate(event,()=>manageAccountSheet('${x.id}'))">⋯</span></span>
       </div>
       <div class="flex between" style="margin:10px 0 2px;"><span class="mono" style="font-size:17px;font-weight:700;">${(x.balance||0).toLocaleString('hu-HU')} Ft</span></div>
     </div>`).join('')}
@@ -5898,7 +6029,7 @@ function renderExpenseDistribution(f){
     <span style="font-size:14px;width:18px;">${escapeHtml(i.icon||'•')}</span>
     <span class="small" style="width:88px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(i.name)}</span>
     <div style="flex:1;background:var(--surface-3);border-radius:999px;height:8px;overflow:hidden;"><div style="height:100%;background:var(--trail-blue);width:${Math.round(100*i.val/max)}%;border-radius:999px;"></div></div>
-    <span class="mono small" style="width:64px;text-align:right;flex-shrink:0;">${i.val.toLocaleString('hu-HU')} Ft</span>
+    <span class="mono small" style="min-width:64px;text-align:right;flex-shrink:0;white-space:nowrap;">${i.val.toLocaleString('hu-HU')} Ft</span>
   </div>`).join('');
 }
 function drawDonutChart(canvas,segments,centerLabel,centerValue){
@@ -6635,7 +6766,7 @@ function nutritionBodyHtml(){
       <div class="subtab ${App.ui.nutView==='honap'?'active':''}" role="button" tabindex="0" onclick="setNutView('honap')" onkeydown="kbActivate(event,()=>setNutView('honap'))">HAVI</div>
     </div>
     <div id="nut-content"></div>
-    <div class="sectiontitle">Testsúly <span class="g small" style="cursor:pointer;" onclick="addWeightSheet()">+ Mérés</span></div>
+    <div class="sectiontitle">Testsúly <span class="g small" style="cursor:pointer;" role="button" tabindex="0" onclick="addWeightSheet()" onkeydown="kbActivate(event,()=>addWeightSheet())">+ Mérés</span></div>
     <div class="card" style="padding:4px 16px;">${lastW.length? lastW.map(w=>`<div class="row"><div class="row-main"><div class="row-title" style="font-size:14px;">${w.kg} kg</div></div><span class="small muted">${fmtDateHu(w.date)}</span></div>`).join('') : `<div class="small muted" style="padding:12px 0;">Még nincs mérés.</div>`}</div>
   `;
 }
@@ -6680,7 +6811,7 @@ function renderNutNap(c){
       <div class="devbar-row"><div class="devbar-label">Zsír</div><div class="devbar-track"><div class="devbar-fill" style="width:${Math.min(100,100*t.fat/(n.targets.fat||1))}%"></div></div><div class="devbar-val">${t.fat}</div></div>
       <button class="btn btn-ghost btn-sm" style="margin-top:8px;" onclick="editTargetsSheet()">Célok szerkesztése</button>
     </div>
-    <div class="sectiontitle">Étkezések <span class="g small" style="cursor:pointer;" onclick="addMealSheet('${iso}')">+ Új</span></div>
+    <div class="sectiontitle">Étkezések <span class="g small" style="cursor:pointer;" role="button" tabindex="0" onclick="addMealSheet('${iso}')" onkeydown="kbActivate(event,()=>addMealSheet('${iso}'))">+ Új</span></div>
     <div class="card" style="padding:4px 16px;">${dayLog.length? dayLog.map(x=>`<div class="row"><div class="row-main"><div class="row-title" style="font-size:14px;">${escapeHtml(x.meal)}</div><div class="row-sub">F:${x.protein||0}g Sz:${x.carbs||0}g Zs:${x.fat||0}g</div></div><span class="mono small">${x.kcal} kcal</span></div>`).join('') : `<div class="small muted" style="padding:12px 0;">Nincs bejegyzés ezen a napon.</div>`}</div>
   `;
 }
@@ -6840,7 +6971,6 @@ RENDERERS.settings = function(){
       <div class="menurow" role="button" tabindex="0" onclick="saveToFile()" onkeydown="kbActivate(event,()=>saveToFile())"><span class="ic">💾</span><span class="lb">Mentés fájlba</span></div>
       <div class="menurow" role="button" tabindex="0" onclick="loadFromFile()" onkeydown="kbActivate(event,()=>loadFromFile())"><span class="ic">📂</span><span class="lb">Betöltés fájlból</span></div>
       <div class="menurow" role="button" tabindex="0" onclick="confirmReset()" onkeydown="kbActivate(event,()=>confirmReset())"><span class="ic" style="color:var(--trail-red);">🗑️</span><span class="lb" style="color:var(--trail-red);">Minden adat törlése</span></div>
-      <div class="menurow" role="button" tabindex="0" onclick="runDevSelfTest()" onkeydown="kbActivate(event,()=>runDevSelfTest())"><span class="ic">🧪</span><span class="lb">Fejlesztői önteszt</span></div>
       <div class="menurow" role="button" tabindex="0" onclick="checkForAppUpdate()" onkeydown="kbActivate(event,()=>checkForAppUpdate())"><span class="ic">🔄</span><span class="lb">Frissítések keresése</span></div>
     </div>
     <div id="backup-status-line">${backupStatusLineHtml()}</div>
@@ -6848,8 +6978,23 @@ RENDERERS.settings = function(){
     <input type="file" id="import-file" accept="application/json" style="display:none;" onchange="importData(event)">
     <div class="small g" style="text-align:center;margin-top:6px;">Ha a jövőben egy telepíthető (APK) verzióra váltasz, a mostani böngészős adatok nem kerülnek át automatikusan, mert a kettő külön tárolót használ. Váltás előtt mentsd el itt az adataidat, majd az új verzióban töltsd be vissza őket.</div>
     <div class="small g" style="text-align:center;margin-top:6px;">MotivApp 2.0 · helyben, ezen az eszközön tárolt adatok</div>
-    <div class="small g" style="text-align:center;margin-top:2px;opacity:0.6;">v${APP_VERSION}</div>`;
+    <div class="small g" style="text-align:center;margin-top:2px;opacity:0.6;" onclick="handleVersionTap()">v${APP_VERSION}</div>`;
 };
+/* audit-round4: a "Fejlesztői önteszt" egy technikai diagnosztikai funkció, ami zavaró volt
+   a végfelhasználóknak szánt fő listában (Mentés fájlba / Minden adat törlése mellett) - ezért
+   kikerült onnan, és helyette a verziószám-feliratra kötött "titkos" gesztus (5x koppintás
+   2 másodpercen belül) nyitja meg, ugyanúgy runDevSelfTest()-tel. */
+let _versionTapCount = 0, _versionTapTimer = null;
+function handleVersionTap(){
+  _versionTapCount++;
+  clearTimeout(_versionTapTimer);
+  _versionTapTimer = setTimeout(()=>{ _versionTapCount = 0; }, 2000);
+  if(_versionTapCount>=5){
+    _versionTapCount = 0;
+    clearTimeout(_versionTapTimer);
+    runDevSelfTest();
+  }
+}
 function togglePerm(key,val){ App.state.aiPerm[key]=val; saveState(); }
 /* checkForAppUpdate: kézi "van-e újabb verzió?" ellenőrzés a Beállításokból,
    hogy fejlesztéskor/tesztkor ne kelljen kivárni az automatikus SW-ellenőrzést.
@@ -6862,9 +7007,11 @@ function checkForAppUpdate(){
     setTimeout(()=>{ if(!_updateBannerEl) toast('A legfrissebb verziót használod.'); }, 1500);
   }).catch(()=>toast('Nem sikerült ellenőrizni — nincs internetkapcsolat?'));
 }
-/* Fejlesztői önteszt: a Settings "Adatok" kártyából indítható, UI-s hozzáférés
+/* Fejlesztői önteszt: a Settings láblécében lévő verziószám-feliratra kötött "titkos"
+   gesztussal (5x koppintás, ld. handleVersionTap()) indítható, UI-s hozzáférés
    a fájl végén definiált runRegressionChecks()-hez (eddig csak konzolból volt
-   hívható). A teszt pár másodpercig futhat (szimulált API-hívásokat is
+   hívható) - szándékosan nincs a fő listában, hogy ne zavarja a végfelhasználót.
+   A teszt pár másodpercig futhat (szimulált API-hívásokat is
    tartalmaz), ezért azonnal nyitunk egy "Fut a teszt..." állapotú sheetet,
    majd a Promise felbontásakor ugyanazt a sheetet frissítjük a valódi
    eredménnyel (openSheet() újrahívása lecseréli a #sheet tartalmát). */
@@ -6938,7 +7085,7 @@ function deleteJournalEntry(entryId){
 function _journalEntryCardHtml(e){
   const emoji = e.mood ? _journalMoodEmoji(e.mood) : '📝';
   const preview = e.text ? escapeHtml(e.text).slice(0,140)+(e.text.length>140?'…':'') : '';
-  return `<div class="card tap" onclick="openJournalComposerSheet('${e.id}')">
+  return `<div class="card tap" role="button" tabindex="0" onclick="openJournalComposerSheet('${e.id}')" onkeydown="kbActivate(event,()=>openJournalComposerSheet('${e.id}'))">
     <div class="card-title">${emoji} ${fmtDateHu(e.date)}</div>
     ${preview?`<div class="small muted" style="margin-top:4px;line-height:1.5;">${preview}</div>`:''}
   </div>`;
@@ -6950,7 +7097,7 @@ function _journalListHtml(){
 }
 function naploSubBodyHtml(){
   return `
-    <div class="sectiontitle">Napló <span class="g small" style="cursor:pointer;" onclick="openJournalComposerSheet()">+ Új bejegyzés</span></div>
+    <div class="sectiontitle">Napló <span class="g small" style="cursor:pointer;" role="button" tabindex="0" onclick="openJournalComposerSheet()" onkeydown="kbActivate(event,()=>openJournalComposerSheet())">+ Új bejegyzés</span></div>
     <div id="naplo-sub-content">${_journalListHtml()}</div>
   `;
 }
@@ -7016,6 +7163,12 @@ function applyImportedJson(text){
   if(!Array.isArray(next.finance.savings)) next.finance.savings = d.finance.savings;
   if(!Array.isArray(next.finance.foodOrders)) next.finance.foodOrders = d.finance.foodOrders;
   if(!Array.isArray(next.finance.spendLedger)) next.finance.spendLedger = d.finance.spendLedger;
+  /* Ugyanaz a history/currentMonth pótlás, mint normalizeAppState()-ben - ld. az ottani doksit.
+     Itt sincs visszamenőleges történet-generálás, csak a mai hónapra állítás. */
+  if(!Array.isArray(next.finance.history)) next.finance.history = d.finance.history;
+  if(typeof next.finance.currentMonth !== 'string' || !/^\d{4}-\d{2}$/.test(next.finance.currentMonth)){
+    next.finance.currentMonth = (new Date()).toISOString().slice(0,7);
+  }
   if(!Array.isArray(next.finance.accounts)) next.finance.accounts = d.finance.accounts;
   /* Ugyanaz a negatív/hibás egyenleg-védelem, mint normalizeAppState()-ben -
      ld. az ottani doksit. Ez a függvény NEM hívja normalizeAppState()-et
@@ -8345,7 +8498,7 @@ function rpgRenderWeekTab(){
     const favJson = escapeHtml(JSON.stringify({kind:'fav', trackId:q.trackId, text:q.text, xp:q.xp}));
     return `
       <div class="row rpg-quest-row">
-        <button class="row-check ${q.done?'done':''}" data-click="rpgToggleQuest" data-id="${viewingWeek}" data-id2="${escapeHtml(q.id)}">${q.done?'✓':''}</button>
+        <button class="row-check ${q.done?'done':''}" role="checkbox" aria-checked="${!!q.done}" data-click="rpgToggleQuest" data-id="${viewingWeek}" data-id2="${escapeHtml(q.id)}">${q.done?'✓':''}</button>
         <div class="row-main">
           <div class="row-title ${q.done?'done':''}">${escapeHtml(q.text)}</div>
           <div class="row-sub">${track.icon} ${escapeHtml(track.name)} · <span class="mono" style="color:${track.color};">+${q.xp} XP</span></div>
