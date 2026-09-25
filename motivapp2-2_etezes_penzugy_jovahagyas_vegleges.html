@@ -384,12 +384,12 @@ a{color:inherit;}
 <script>
 /* ================= CORE: STATE + STORAGE + UTILS ================= */
 const STORAGE_KEY = 'motivapp2:state';
-const APP_VERSION = '2.2.39';
+const APP_VERSION = '2.2.40';
 /* EXPECTED_SW_CACHE_NAME: minden kiadásnál EGYÜTT bumpolva a sw.js
    CACHE_NAME-jével (ld. selfHealIfStale() a fájl végén) — ez teszi
    lehetővé, hogy egy betöltött oldal fel tudja ismerni, ha ő maga
    régebbi, mint amit a szerver éppen kiszolgál. */
-const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.39';
+const EXPECTED_SW_CACHE_NAME = 'motivapp-cache-v2.2.40';
 const DAY_TYPES = {
   nappal:{label:'NAPPALOS MŰSZAK',color:'yellow'},
   ejszaka:{label:'ÉJSZAKÁS MŰSZAK',color:'blue'},
@@ -511,7 +511,10 @@ function defaultState(){
       // applyImportedJson() "oldIncome" pótlása egy nagyon régi, mandatory-tömb NÉLKÜLI mentésből) olvassa,
       // élő számítás/megjelenítés SEHOL nem használja - ld. finance.incomeSources lent.
       incomeSources:[ // Bevételi forrásaid (ÁTTEKINTÉS al-fül) - a monthlyIncome flat számot váltja fel, hogy
-        // több bevételi forrás (fizetés + melléklás + egyéb rendszeres bevétel) is felvehető legyen.
+        // több bevételi forrás (fizetés + melléklás + egyéb rendszeres bevétel) is felvehető legyen. Az
+        // itteni amount csak sablon/várt összeg (szerkesztése: manageIncomeSourceSheet()/
+        // saveIncomeSourceEdits()) - a tényleges számlaegyenlegre a felhasználó a "+ Jóváírás" akcióval
+        // (creditIncomeSourceSheet()/saveIncomeCredit()) ír jóvá, ld. az accounts doksiját lent.
         {id:'inc1',name:'Fizetés',amount:0},
       ],
       mandatory:[
@@ -545,7 +548,13 @@ function defaultState(){
       // a felhasználó közvetlenül állítja be/módosítja (manageAccountSheet()),
       // pont úgy, mint a discretionary.spent / savings.saved mezőket - NINCS
       // automatikus levonás/befizetés a monthlyIncome/mandatory/discretionary
-      // felől, ld. RENDERERS.finance SZÁMLÁK al-fül doksiját.
+      // felől, ld. RENDERERS.finance SZÁMLÁK al-fül doksiját. EGYETLEN SZÁNDÉKOS
+      // kivétel: a incomeSources[] kártyáin lévő explicit "+ Jóváírás" akció
+      // (creditIncomeSourceSheet()/saveIncomeCredit()) a felhasználó kifejezett
+      // kezdeményezésére, kézzel ír jóvá egy összeget egy általa választott
+      // számlán - ez NEM automatikus levonás/befizetés, csak erre a konkrét,
+      // egy gombnyomásos felhasználói akcióra korlátozódik, és nem módosítja
+      // magát az incomeSources[].amount sablon-összeget.
       accounts:[
         {id:'acc-checking',name:'Folyószámla',icon:'💳',type:'checking',balance:0},
         {id:'acc-savings',name:'Megtakarítási számla',icon:'🏦',type:'savings',balance:0},
@@ -5834,6 +5843,12 @@ RENDERERS.finance = function(){
         <span class="flex gap8 center"><span style="font-size:16px;">💰</span><span class="row-title" style="font-weight:700;font-size:14px;">${escapeHtml(x.name)}</span></span>
         <span class="flex gap8 center"><span class="mono" style="font-size:15px;">${(x.amount||0).toLocaleString('hu-HU')} Ft</span><span class="g" style="cursor:pointer;font-size:16px;padding:2px 4px;" role="button" tabindex="0" onclick="manageIncomeSourceSheet('${x.id}')" onkeydown="kbActivate(event,()=>manageIncomeSourceSheet('${x.id}'))">⋯</span></span>
       </div>
+      <div class="flex between" style="margin-top:8px;">
+        <span></span>
+        <span class="small" style="display:flex;gap:12px;">
+          <a style="color:var(--trail-yellow);cursor:pointer;" onclick="creditIncomeSourceSheet('${x.id}')">+ Jóváírás</a>
+        </span>
+      </div>
     </div>`).join('')}
     <div class="small" style="margin:-6px 0 18px;color:var(--trail-yellow);cursor:pointer;" onclick="addIncomeSourceSheet()">+ Új bevételi forrás hozzáadása</div>
 
@@ -6087,6 +6102,54 @@ function saveIncomeSource(){
   if(amount<0){ toast('Az érték nem lehet negatív'); return; }
   App.state.finance.incomeSources.push({id:uid(),name,amount});
   saveState(); closeSheet(); toast('Hozzáadva'); RENDERERS.finance();
+}
+/* creditIncomeSourceSheet(id)/saveIncomeCredit(id): a bevételi forrás x.amount
+   sablon/várt-összeg mezőjétől TELJESEN KÜLÖN, explicit "+ Jóváírás" akció - ez
+   az EGYETLEN hely, ahol egy incomeSources[] tétel ténylegesen hat egy
+   finance.accounts[] egyenlegre (ld. a defaultState() accounts doksiját). A
+   manageIncomeSourceSheet()/saveIncomeSourceEdits() ("⋯" menü) továbbra is
+   csak a sablon-összeget írja át, a számlaegyenleghez NEM ér hozzá - a két út
+   szándékosan különálló, mert a sablon-szerkesztés ("mennyit várok havonta")
+   és a tényleges jóváírás ("most tényleg megkaptam ennyit") két különböző
+   pillanat (pl. egyszeri bónusz esetén a jóváírt összeg eltérhet a sablontól,
+   ld. az előre kitöltött, de szerkeszthető összeg-mezőt lent). Ugyanazt az
+   "addToSavingsSheet()/saveSavingsAdd() - Befizetés" mintát követi (hozzáad,
+   nem felülír), csak a savings[].saved helyett egy accounts[].balance-hoz. */
+function creditIncomeSourceSheet(id){
+  const x=App.state.finance.incomeSources.find(i=>i.id===id); if(!x) return;
+  const accounts=App.state.finance.accounts||[];
+  if(!accounts.length){
+    openSheet(`<div class="sheet-head"><div class="sheet-title">Jóváírás</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+      <div class="small muted" style="padding:8px 0;">Még nincs számlád — vegyél fel egyet a SZÁMLÁK fülön, hogy jóváírhasd rajta a bevételt.</div>
+      <button class="btn btn-block" onclick="closeSheet()">Rendben</button>`);
+    return;
+  }
+  const checkingAccounts=accounts.filter(a=>a.type==='checking');
+  const candidates=checkingAccounts.length ? checkingAccounts : accounts;
+  const chipsHtml=candidates.map((a,i)=>`<div class="chip ${i===0?'active':''}" data-id="${escapeHtml(a.id)}">${escapeHtml(a.icon||'💳')} ${escapeHtml(a.name)}</div>`).join('');
+  openSheet(`<div class="sheet-head"><div class="sheet-title">Jóváírás - ${escapeHtml(x.name)}</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
+    ${candidates.length>1
+      ? `<div class="field"><label>Melyik számlára?</label><div class="chiprow" id="inc-credit-acct">${chipsHtml}</div></div>`
+      : `<input type="hidden" id="inc-credit-acct-fixed" value="${escapeHtml(candidates[0].id)}">`}
+    <div class="field"><label>Összeg (Ft)</label><input type="text" inputmode="numeric" id="inc-credit-amount" value="${fmtFtInput(x.amount||0)}" style="font-size:20px;text-align:center;padding:16px;"></div>
+    <button class="btn btn-primary btn-block" onclick="saveIncomeCredit('${id}')">Jóváírás</button>`);
+  if(candidates.length>1){
+    document.querySelectorAll('#inc-credit-acct .chip').forEach(c=>c.addEventListener('click',()=>{
+      document.querySelectorAll('#inc-credit-acct .chip').forEach(x2=>x2.classList.remove('active')); c.classList.add('active');
+    }));
+  }
+  formatAmountInputLive(document.getElementById('inc-credit-amount'));
+}
+function saveIncomeCredit(id){
+  const x=App.state.finance.incomeSources.find(i=>i.id===id); if(!x) return;
+  const v=parseAmountInput(document.getElementById('inc-credit-amount').value);
+  if(v<0){ toast('Az érték nem lehet negatív'); return; }
+  const activeChip=document.querySelector('#inc-credit-acct .chip.active');
+  const acctId=activeChip? activeChip.dataset.id : document.getElementById('inc-credit-acct-fixed')?.value;
+  const acct=App.state.finance.accounts.find(a=>a.id===acctId);
+  if(!acct){ toast('Válassz egy számlát'); return; }
+  acct.balance=(acct.balance||0)+v;
+  saveState(); closeSheet(); toast('Jóváírva'); RENDERERS.finance();
 }
 function addMandatorySheet(){
   openSheet(`<div class="sheet-head"><div class="sheet-title">Kötelező tétel</div><button class="iconbtn" onclick="closeSheet()">✕</button></div>
